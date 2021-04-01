@@ -29,9 +29,9 @@ from oneflow.python.nn.common_types import _size_1_t, _size_2_t, _size_3_t
 from typing import Optional, List, Tuple
 from oneflow.python.ops.nn_ops import calc_pool_padding, get_dhw_offset
 import oneflow.python.framework.id_util as id_util
-from oneflow.python.framework.tensor import register_tensor_op_by_module
 
 
+@oneflow_export("tmp.Matmul")
 class MatMul(Module):
     def __init__(
         self,
