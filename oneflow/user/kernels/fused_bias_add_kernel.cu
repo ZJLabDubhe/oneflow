@@ -133,6 +133,24 @@ __global__ void FusedBiasAddRowGpuHalf2(FUNCTOR functor, const Index elem_cnt,
 }
 
 template<typename FUNCTOR, typename Index>
+__global__ void FusedBiasAddRowGpuHalf23072(FUNCTOR functor, const Index elem_cnt,
+                                        const Index bias_size, const half* x, const half* bias,
+                                        half* y) {
+  const Index h2_elem_cnt = elem_cnt / 2;
+  const Index h2_bias_size = 3072 / 2;
+  const auto* x_h2 = reinterpret_cast<const half2*>(x);
+  const auto* bias_h2 = reinterpret_cast<const half2*>(bias);
+  auto* y_h2 = reinterpret_cast<half2*>(y);
+  CUDA_1D_KERNEL_LOOP_T(Index, i, h2_elem_cnt) {
+    half2 x_i = __hadd2(x_h2[i], bias_h2[i % h2_bias_size]);
+    half2 y_i;
+    y_i.x = functor.compute(x_i.x, 2 * i);
+    y_i.y = functor.compute(x_i.y, 2 * i + 1);
+    y_h2[i] = y_i;
+  }
+}
+
+template<typename FUNCTOR, typename Index>
 __global__ void FusedBiasAddGradRowGpuHalf2(FUNCTOR grad_functor, const Index elem_cnt,
                                             const Index bias_size, const half* x, const half* bias,
                                             const half* dy, half* dx) {
@@ -188,9 +206,15 @@ struct FusedBiasAddRowCalculation<FUNCTOR, half, Index> {
   static void Invoke(DeviceCtx* ctx, FUNCTOR functor, Index elem_cnt, Index bias_size,
                      const half* x, const half* bias, half* y) {
     if (bias_size % 2 == 0) {
-      FusedBiasAddRowGpuHalf2<FUNCTOR, Index>
+      if(bias_size == 3072) {
+        FusedBiasAddRowGpuHalf23072<FUNCTOR, Index>
           <<<BlocksNum4ThreadsNum(elem_cnt / 2), kCudaThreadsNumPerBlock, 0, ctx->cuda_stream()>>>(
               functor, elem_cnt, bias_size, x, bias, y);
+      } else {
+        FusedBiasAddRowGpuHalf2<FUNCTOR, Index>
+            <<<BlocksNum4ThreadsNum(elem_cnt / 2), kCudaThreadsNumPerBlock, 0, ctx->cuda_stream()>>>(
+                functor, elem_cnt, bias_size, x, bias, y);
+      }
     } else {
       FusedBiasAddRowGpu<FUNCTOR, half, Index>
           <<<BlocksNum4ThreadsNum(elem_cnt), kCudaThreadsNumPerBlock, 0, ctx->cuda_stream()>>>(
