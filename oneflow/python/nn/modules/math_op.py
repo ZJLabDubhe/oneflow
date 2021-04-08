@@ -647,48 +647,78 @@ class Add(Module):
             return BroadcastAdd()(x, y)
 
 
-@register_tensor_op_by_module("sin")
-@register_op_by_module("sin")
 @oneflow_export("Sin")
+@register_op_by_module("sin")
 class Sin(Module):
-    """This operator computes the sin value of Tensor."""
+    r"""
+    Returns a new tensor with the sine of the elements of :attr:`input`.
+
+    .. math::
+        \text{out}_{i} = \sin(\text{input}_{i})
+
+    Args:
+        {input}
+
+    Keyword args:
+        {out}
+
+    """
     def __init__(self) -> None:
         super().__init__()
-        name = id_util.UniqueStr("sin" + "_")
         self._op = (
-            flow.builtin_op("sin", name).Input("x").Output("y").Build()
+            flow.builtin_op("sin").Input("x").Output("y").Build()
         )
 
     def forward(self, x):
         return self._op(x)[0]
 
 
-@register_tensor_op_by_module("cos")
-@register_op_by_module("cos")
 @oneflow_export("Cos")
+@register_op_by_module("cos")
 class Cos(Module):
-    """This operator computes the cosine value of Tensor."""
+    r"""
+    Returns a new tensor with the cosine  of the elements of :attr:`input`.
+
+    .. math::
+        \text{out}_{i} = \cos(\text{input}_{i})
+
+    Args:
+        {input}
+
+    Keyword args:
+        {out}
+        
+    """
     def __init__(self) -> None:
         super().__init__()
-        name = id_util.UniqueStr("cos" + "_")
         self._op = (
-            flow.builtin_op("cos", name).Input("x").Output("y").Build()
+            flow.builtin_op("cos").Input("x").Output("y").Build()
         )
 
     def forward(self, x):
         return self._op(x)[0]
 
 
-@register_tensor_op_by_module("log")
-@register_op_by_module("log")
 @oneflow_export("Log")
+@register_op_by_module("log")
 class Log(Module):
-    """This operator computes the Log value of Tensor."""
+    r"""
+    Returns a new tensor with the natural logarithm of the elements of :attr:`input`.
+
+    .. math::
+        y_{i} = \log_{e} (x_{i})
+
+    Args:
+        {input}
+
+    Keyword args:
+        {out}
+        
+    """
     def __init__(self) -> None:
         super().__init__()
-        name = id_util.UniqueStr("log" + "_")
         self._op = (
-            flow.builtin_op("log", name).Input("x").Output("y").Build()
+            flow.builtin_op("log").Input("x").Output("y").Build()
         )
 
     def forward(self, x):
