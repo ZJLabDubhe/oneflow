@@ -40,6 +40,11 @@ class TestModule(flow.unittest.TestCase):
         y3 = x3.unsqueeze(4)
         test_case.assertTrue(np.allclose(flow.Size([2, 6, 9, 3, 1]), y3.shape))
 
+    def test_unsqueeze4(test_case):
+        x3 = flow.Tensor(np.random.rand(2, 6, 9, 3))
+        y3 = flow.unsqueeze(x3, 4)
+        test_case.assertTrue(np.allclose(flow.Size([2, 6, 9, 3, 1]), y3.shape))
+
 
 if __name__ == "__main__":
     unittest.main()
