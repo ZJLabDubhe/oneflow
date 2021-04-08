@@ -68,6 +68,38 @@ class ReLU(Module):
 
 @oneflow_export("nn.Softmax")
 class Softmax(Module):
+    r"""Applies the element-wise function:
+
+    .. math::
+        \text{Sigmoid}(x) = \sigma(x) = \frac{1}{1 + \exp(-x)}
+
+
+    Shape:
+        - Input: :math:`(N, *)` where `*` means, any number of additional
+          dimensions
+        - Output: :math:`(N, *)`, same shape as the input
+    
+    For example: 
+
+    .. code-block:: python 
+
+        import oneflow as flow
+        import numpy as np
+    
+        m = flow.nn.LogSoftmax(dim=1)
+        x = flow.Tensor(
+            np.array(
+                [[ 0.81733328,  0.43621480,  0.10351428],
+                [-1.15555191, -0.67776406,  0.27372134]]
+            )
+        )
+        y = m(x)
+
+        # y:
+        # [[0.69367    0.6073567  0.5258555 ]
+        # [0.23947646 0.33676052 0.5680063 ]]
+
+    """
     def __init__(
         self, axis: Optional[int] = None, name: Optional[str] = None,
     ):
@@ -118,6 +150,9 @@ class LogSoftmax(Module):
 
     .. code-block:: python 
 
+        import oneflow as flow
+        import numpy as np
+    
         m = flow.nn.LogSoftmax(dim=1)
         x = flow.Tensor(
             np.array(

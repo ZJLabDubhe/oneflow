@@ -21,6 +21,23 @@ import oneflow as flow
     ".numpy() doesn't work in eager mode",
 )
 class TestModule(flow.unittest.TestCase):
+    def test_sigmoid(test_case):
+        m = flow.nn.Sigmoid()
+        x = flow.Tensor(
+            np.array(
+                [[ 0.81733328,  0.43621480,  0.10351428],
+                [-1.15555191, -0.67776406,  0.27372134]]
+            )
+        )
+        y = m(x)
+        torch_out = np.array(
+            [[0.69366997, 0.60735673, 0.52585548],
+            [0.23947647, 0.33676055, 0.56800622]]
+        )
+        test_case.assertTrue(np.allclose(y.numpy(), torch_out, rtol=1e-05))
+
+
+
     def test_logsoftmax(test_case):
         m1 = flow.nn.LogSoftmax(dim=1)
         x1 = flow.Tensor(
