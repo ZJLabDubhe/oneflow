@@ -24,7 +24,7 @@ from oneflow.python.framework.tensor import register_op_by_module
 @register_tensor_op_by_module("unsqueeze")
 @register_op_by_module("unsqueeze")
 class Unsqueeze(Module):
-    """Returns a new tensor with a dimension of size one inserted at the
+    r"""Returns a new tensor with a dimension of size one inserted at the
     specified position.
 
     The returned tensor shares the same underlying data with this tensor.
@@ -43,7 +43,7 @@ class Unsqueeze(Module):
 
         import numpy as np
         import oneflow as flow
-        
+
         x = flow.Tensor(np.random.rand(2, 3, 4))
         y = x.unsqueeze(2)
         print(y.shape)

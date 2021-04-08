@@ -93,24 +93,47 @@ class Softmax(Module):
 
 @oneflow_export("nn.LogSoftmax")
 class LogSoftmax(Module):
-    r"""Applies the :math:`\log(\text{Softmax}(x))` function to an n-dimensional
-    input Tensor. The LogSoftmax formulation can be simplified as:
+    r"""Thresholds each element of the input Tensor.
+
+    Threshold is defined as:
 
     .. math::
-        \text{LogSoftmax}(x_{i}) = \log\left(\frac{\exp(x_i) }{ \sum_j \exp(x_j)} \right)
-
-    Shape:
-        - Input: :math:`(*)` where `*` means, any number of additional
-          dimensions
-        - Output: :math:`(*)`, same shape as the input
+        y =
+        \begin{cases}
+        x, &\text{ if } x > \text{threshold} \\
+        \text{value}, &\text{ otherwise }
+        \end{cases}
 
     Args:
-        dim (int): A dimension along which LogSoftmax will be computed.
+        threshold: The value to threshold at
+        value: The value to replace with
+        inplace: can optionally do the operation in-place. Default: ``False``
 
-    Returns:
-        a Tensor of the same dimension and shape as the input with
-        values in the range [-inf, 0)
+    Shape:
+        - Input: :math:`(N, *)` where `*` means, any number of additional
+          dimensions
+        - Output: :math:`(N, *)`, same shape as the input
+
+    For example: 
+
+    .. code-block:: python 
+
+        m = flow.nn.LogSoftmax(dim=1)
+        x = flow.Tensor(
+            np.array(
+                [[ 0.4296, -1.1957,  2.5463],
+                [ 1.2552, -1.5747,  0.6923]]
+            )
+        )
+        y = m(x)
+
+        # y:
+        # [[-2.251349   -3.8766491  -0.13464898]
+        # [-0.48770458 -3.3176045  -1.0506046 ]]
+
+
     """
+
     def __init__(
         self, dim: Optional[int] = 1,
     ):
