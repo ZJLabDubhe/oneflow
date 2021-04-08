@@ -16,9 +16,7 @@ limitations under the License.
 import unittest
 
 import numpy as np
-
 import oneflow as flow
-import oneflow.typing as tp
 
 
 @unittest.skipIf(
@@ -28,9 +26,9 @@ import oneflow.typing as tp
 class TestModule(flow.unittest.TestCase):
     def test_identity(test_case):
         m = flow.nn.Identity(54, unused_argument1=0.1, unused_argument2=False)
-        x = flow.Tensor(np.random.rand(2, 3, 4, 5))
+        x = flow.Tensor(2, 3, 4, 5)
         y = m(x)
-        print(np.allclose(x.numpy(), y.numpy()))
+        test_case.assertTrue(np.allclose(x.numpy(), y.numpy()))
 
 
 if __name__ == "__main__":
