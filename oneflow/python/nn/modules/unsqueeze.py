@@ -24,6 +24,32 @@ from oneflow.python.framework.tensor import register_op_by_module
 @register_tensor_op_by_module("unsqueeze")
 @register_op_by_module("unsqueeze")
 class Unsqueeze(Module):
+    """Returns a new tensor with a dimension of size one inserted at the
+    specified position.
+
+    The returned tensor shares the same underlying data with this tensor.
+
+    A :attr:`dim` value within the range ``[-input.dim() - 1, input.dim() + 1)``
+    can be used. Negative :attr:`dim` will correspond to :meth:`unsqueeze`
+    applied at :attr:`dim` = ``dim + input.dim() + 1``.
+
+    Args:
+        {input}
+        dim (int): the index at which to insert the singleton dimension
+    
+    For example: 
+
+    .. code-block:: python 
+
+        import numpy as np
+        import oneflow as flow
+        
+        x = flow.Tensor(np.random.rand(2, 3, 4))
+        y = x.unsqueeze(2)
+        print(y.shape)
+        # (2, 3, 1, 4)
+    
+    """
 
     def __init__(self) -> None:
         super().__init__()

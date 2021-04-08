@@ -16,9 +16,7 @@ limitations under the License.
 import unittest
 
 import numpy as np
-
 import oneflow as flow
-import oneflow.typing as tp
 
 
 @unittest.skipIf(
@@ -30,7 +28,6 @@ class TestModule(flow.unittest.TestCase):
         m = flow.nn.Unsqueeze()
         x = flow.Tensor(np.random.rand(16, 20))
         y = m(x, 1)
-        print("y.shape >>>>>>>>>>>>>>>>>>> ", y.shape)
         print(np.allclose(flow.Size([16, 1, 20]), y.shape))
 
 
