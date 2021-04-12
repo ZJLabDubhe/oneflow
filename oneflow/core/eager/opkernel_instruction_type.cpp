@@ -40,6 +40,7 @@ limitations under the License.
 #include "oneflow/core/operator/op_conf_symbol.h"
 #include "oneflow/core/framework/tensor_impl.h"
 #include "oneflow/user/kernels/stateful_opkernel.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace oneflow {
 namespace eager {
@@ -600,11 +601,15 @@ struct LocalCallOpKernelUtil final {
 };
 
 void LocalCallOpKernelInstructionType::Infer(vm::Instruction* instruction) const {
+  OF_PROFILER_RANGE_GUARD("OpInfer");
   CHECK_OK(LocalCallOpKernelUtil::Infer(instruction));
+  OF_PROFILER_RANGE_POP();
 }
 
 void LocalCallOpKernelInstructionType::Compute(vm::Instruction* instruction) const {
+  OF_PROFILER_RANGE_GUARD("OpCompute");
   CHECK_OK(LocalCallOpKernelUtil::Compute(instruction));
+  OF_PROFILER_RANGE_POP();
 }
 
 Maybe<void> CallOpKernelInstructionType::MaybeInfer(vm::Instruction* instruction,

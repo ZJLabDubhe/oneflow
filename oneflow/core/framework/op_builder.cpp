@@ -18,6 +18,7 @@ limitations under the License.
 #include "oneflow/core/common/protobuf.h"
 #include "oneflow/core/framework/id_util.h"
 #include "oneflow/core/framework/op_builder.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace oneflow {
 namespace one {
@@ -88,7 +89,12 @@ OpBuilder& OpBuilder::Attr(const std::string& attr_name, const cfg::AttrValue& a
 }
 
 Maybe<UserOpExpr> OpBuilder::Build() {
-  return std::make_shared<UserOpExpr>(op_name_, std::move(proto_), indexed_ibns_, indexed_obns_);
+  OF_PROFILER_RANGE_PUSH("OpBuilder::Build");
+  printf("yaochi: opbuild\n");
+  auto ret =
+      std::make_shared<UserOpExpr>(op_name_, std::move(proto_), indexed_ibns_, indexed_obns_);
+  OF_PROFILER_RANGE_POP();
+  return ret;
 }
 
 }  // namespace one

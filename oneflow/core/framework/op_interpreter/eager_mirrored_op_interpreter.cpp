@@ -29,33 +29,67 @@ limitations under the License.
 #include "oneflow/core/memory/memory_case_util.h"
 #include "oneflow/core/operator/operator.h"
 #include "oneflow/user/kernels/stateful_opkernel.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace oneflow {
 namespace one {
 
 static Maybe<void> NaiveInterpret(const BuiltinOpExpr& op_expr, const TensorTuple& inputs,
                                   TensorTuple* outputs) {
+  // printf("mirrored NaiveInterpret\n");
+  OF_PROFILER_RANGE_GUARD("NaiveInterpret");
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: GetCurrentScope");
   std::shared_ptr<const ParallelDesc> parallel_desc;
   std::shared_ptr<const Device> device;
   const auto& scope = JUST(GetCurrentScope());
+  // OF_PROFILER_RANGE_POP(); //NaiveInterpret: GetCurrentScope
+
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: device_parallel_desc_symbol");
   parallel_desc = scope->device_parallel_desc_symbol();
+  // OF_PROFILER_RANGE_POP();
+
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: MakeDeviceByParallelDesc");
   device = JUST(Device::MakeDeviceByParallelDesc(*parallel_desc));
+  // OF_PROFILER_RANGE_POP();
+
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: DeviceId4ParallelId");
   int64_t device_id = JUST(parallel_desc->DeviceId4ParallelId(0));
+  // OF_PROFILER_RANGE_POP();
+
   // TODO: async
-  TensorsPtr eager_blob_objects = std::make_shared<std::vector<std::shared_ptr<eager::EagerBlobObject>>>();
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: make_shared");
+  TensorsPtr eager_blob_objects =
+      std::make_shared<std::vector<std::shared_ptr<eager::EagerBlobObject>>>();
+  // OF_PROFILER_RANGE_POP();
+
   auto build_instruction = [&](const std::shared_ptr<InstructionsBuilder>& builder) {
+    // OF_PROFILER_RANGE_GUARD("build_instruction: make_shared");
     auto& user_op_expr = dynamic_cast<const UserOpExpr&>(op_expr);
+    // OF_PROFILER_RANGE_POP();
     // TODO:
+    // OF_PROFILER_RANGE_GUARD("build_instruction: set_device");
     user_op_expr.mut_kernel()->set_device(parallel_desc->device_type(), device_id,
                                           parallel_desc->device_tag());
+    // OF_PROFILER_RANGE_POP();
+
+    // OF_PROFILER_RANGE_GUARD("build_instruction: LocalCallOpKernel");
     builder->LocalCallOpKernel(user_op_expr.mut_kernel(), inputs, *outputs, eager_blob_objects,
                                parallel_desc);
+    // OF_PROFILER_RANGE_POP();
   };
+
+  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: LogicalRun");
   JUST(LogicalRun(build_instruction));
+  // OF_PROFILER_RANGE_POP();
+
   for (int i = 0; i < outputs->size(); ++i) {
-    (*outputs)[i] = CHECK_JUST(
-        OpInterpUtil::BuildEagerMirroredTensorFromEagerBlobObject((*eager_blob_objects)[i], device));
+    OF_PROFILER_RANGE_GUARD("NaiveInterpret: BuildEagerMirroredTensorFromEagerBlobObject");
+    (*outputs)[i] = CHECK_JUST(OpInterpUtil::BuildEagerMirroredTensorFromEagerBlobObject(
+        (*eager_blob_objects)[i], device));
+    OF_PROFILER_RANGE_POP();
   }
+
+  OF_PROFILER_RANGE_POP();
   return Maybe<void>::Ok();
 }
 

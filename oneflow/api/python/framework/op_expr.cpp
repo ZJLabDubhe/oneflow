@@ -23,6 +23,7 @@ limitations under the License.
 #include "oneflow/core/framework/tensor.h"
 #include "oneflow/core/framework/tensor_tuple.h"
 #include "oneflow/core/framework/user_op_conf.cfg.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace py = pybind11;
 
@@ -35,8 +36,13 @@ Maybe<one::TensorTuple> Interpret(const one::OpExpr& op, const one::TensorTuple&
       << "The operation requires " << op.input_num() << " inputs, but " << inputs.size()
       << " is given.";
   auto outputs = std::make_shared<one::TensorTuple>(op.output_num());
+  OF_PROFILER_RANGE_GUARD("Interpret:GetInterpreter");
   auto interperter = JUST(one::OpInterpUtil::GetInterpreter());
+  OF_PROFILER_RANGE_POP();
+
+  OF_PROFILER_RANGE_GUARD("Interpret:Apply");
   JUST(interperter->Apply(op, inputs, outputs.get()));
+  OF_PROFILER_RANGE_POP();
   return outputs;
 }
 

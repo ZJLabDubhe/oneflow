@@ -25,6 +25,7 @@ limitations under the License.
 #include "oneflow/core/framework/tensor_tuple.h"
 #include "oneflow/core/eager/foreign_boxing_util.h"
 #include "oneflow/core/operator/operator.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace oneflow {
 namespace one {
@@ -99,7 +100,10 @@ Maybe<void> EagerInterpreter::Apply(const OpExpr& op_expr, const TensorTuple& in
                                     TensorTuple* outputs) const {
 #define APPLY_IF(op_type)                                              \
   if (const auto* op = dynamic_cast<const op_type##Expr*>(&op_expr)) { \
-    return ApplyImpl(*op, inputs, outputs);                            \
+    OF_PROFILER_RANGE_GUARD("Apply:" #op_type);                        \
+    auto ret = ApplyImpl(*op, inputs, outputs);                        \
+    OF_PROFILER_RANGE_POP();                                           \
+    return ret;                                                        \
   }
 
   APPLY_IF(UserOp);
