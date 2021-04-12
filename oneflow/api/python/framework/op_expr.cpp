@@ -32,16 +32,18 @@ namespace oneflow {
 namespace {
 
 Maybe<one::TensorTuple> Interpret(const one::OpExpr& op, const one::TensorTuple& inputs) {
+  OF_PROFILER_RANGE_PUSH("Interpret");
   CHECK_EQ_OR_RETURN(op.input_num(), inputs.size())
       << "The operation requires " << op.input_num() << " inputs, but " << inputs.size()
       << " is given.";
   auto outputs = std::make_shared<one::TensorTuple>(op.output_num());
-  OF_PROFILER_RANGE_GUARD("Interpret:GetInterpreter");
+  OF_PROFILER_RANGE_PUSH("Interpret:GetInterpreter");
   auto interperter = JUST(one::OpInterpUtil::GetInterpreter());
   OF_PROFILER_RANGE_POP();
 
-  OF_PROFILER_RANGE_GUARD("Interpret:Apply");
+  OF_PROFILER_RANGE_PUSH("Interpret:Apply");
   JUST(interperter->Apply(op, inputs, outputs.get()));
+  OF_PROFILER_RANGE_POP();
   OF_PROFILER_RANGE_POP();
   return outputs;
 }

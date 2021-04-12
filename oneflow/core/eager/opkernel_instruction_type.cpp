@@ -601,13 +601,13 @@ struct LocalCallOpKernelUtil final {
 };
 
 void LocalCallOpKernelInstructionType::Infer(vm::Instruction* instruction) const {
-  OF_PROFILER_RANGE_GUARD("OpInfer");
+  OF_PROFILER_RANGE_PUSH("OpInfer");
   CHECK_OK(LocalCallOpKernelUtil::Infer(instruction));
   OF_PROFILER_RANGE_POP();
 }
 
 void LocalCallOpKernelInstructionType::Compute(vm::Instruction* instruction) const {
-  OF_PROFILER_RANGE_GUARD("OpCompute");
+  OF_PROFILER_RANGE_PUSH("OpCompute");
   CHECK_OK(LocalCallOpKernelUtil::Compute(instruction));
   OF_PROFILER_RANGE_POP();
 }

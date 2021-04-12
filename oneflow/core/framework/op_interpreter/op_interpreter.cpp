@@ -100,7 +100,7 @@ Maybe<void> EagerInterpreter::Apply(const OpExpr& op_expr, const TensorTuple& in
                                     TensorTuple* outputs) const {
 #define APPLY_IF(op_type)                                              \
   if (const auto* op = dynamic_cast<const op_type##Expr*>(&op_expr)) { \
-    OF_PROFILER_RANGE_GUARD("Apply:" #op_type);                        \
+    OF_PROFILER_RANGE_PUSH("Apply:" #op_type);                         \
     auto ret = ApplyImpl(*op, inputs, outputs);                        \
     OF_PROFILER_RANGE_POP();                                           \
     return ret;                                                        \

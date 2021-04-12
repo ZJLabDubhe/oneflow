@@ -16,8 +16,11 @@ limitations under the License.
 import oneflow as flow
 import oneflow_api
 
+oneflow_api = flow.oneflow_api
+
 
 def user_op_expr_call(self, *args):
+    oneflow_api.profiler.RangePush("user_op_expr_call:1")
     args = list(args)
     for i in range(len(args)):
         arg = args[i]
@@ -25,13 +28,19 @@ def user_op_expr_call(self, *args):
             if not arg.is_determined:
                 arg.determine()
             args[i] = arg._local_or_consistent_tensor
+    oneflow_api.profiler.RangePop()
 
+    oneflow_api.profiler.RangePush("user_op_expr_call:2")
     results = self.apply(args)
+    oneflow_api.profiler.RangePop()
+
+    oneflow_api.profiler.RangePush("user_op_expr_call:3")
     for i, out in enumerate(results):
         tensor = flow.Tensor(*out.shape)
         tensor._local_or_consistent_tensor = out
         tensor._undetermined_tensor = None
         results[i] = tensor
+    oneflow_api.profiler.RangePop()
 
     return results
 

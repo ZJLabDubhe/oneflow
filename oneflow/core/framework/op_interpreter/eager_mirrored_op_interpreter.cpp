@@ -37,53 +37,53 @@ namespace one {
 static Maybe<void> NaiveInterpret(const BuiltinOpExpr& op_expr, const TensorTuple& inputs,
                                   TensorTuple* outputs) {
   // printf("mirrored NaiveInterpret\n");
-  OF_PROFILER_RANGE_GUARD("NaiveInterpret");
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: GetCurrentScope");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: GetCurrentScope");
   std::shared_ptr<const ParallelDesc> parallel_desc;
   std::shared_ptr<const Device> device;
   const auto& scope = JUST(GetCurrentScope());
-  // OF_PROFILER_RANGE_POP(); //NaiveInterpret: GetCurrentScope
+  OF_PROFILER_RANGE_POP();  // NaiveInterpret: GetCurrentScope
 
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: device_parallel_desc_symbol");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: device_parallel_desc_symbol");
   parallel_desc = scope->device_parallel_desc_symbol();
-  // OF_PROFILER_RANGE_POP();
+  OF_PROFILER_RANGE_POP();
 
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: MakeDeviceByParallelDesc");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: MakeDeviceByParallelDesc");
   device = JUST(Device::MakeDeviceByParallelDesc(*parallel_desc));
-  // OF_PROFILER_RANGE_POP();
+  OF_PROFILER_RANGE_POP();
 
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: DeviceId4ParallelId");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: DeviceId4ParallelId");
   int64_t device_id = JUST(parallel_desc->DeviceId4ParallelId(0));
-  // OF_PROFILER_RANGE_POP();
+  OF_PROFILER_RANGE_POP();
 
   // TODO: async
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: make_shared");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: make_shared");
   TensorsPtr eager_blob_objects =
       std::make_shared<std::vector<std::shared_ptr<eager::EagerBlobObject>>>();
-  // OF_PROFILER_RANGE_POP();
+  OF_PROFILER_RANGE_POP();
 
   auto build_instruction = [&](const std::shared_ptr<InstructionsBuilder>& builder) {
-    // OF_PROFILER_RANGE_GUARD("build_instruction: make_shared");
+    OF_PROFILER_RANGE_PUSH("build_instruction: make_shared");
     auto& user_op_expr = dynamic_cast<const UserOpExpr&>(op_expr);
-    // OF_PROFILER_RANGE_POP();
+    OF_PROFILER_RANGE_POP();
     // TODO:
-    // OF_PROFILER_RANGE_GUARD("build_instruction: set_device");
+    OF_PROFILER_RANGE_PUSH("build_instruction: set_device");
     user_op_expr.mut_kernel()->set_device(parallel_desc->device_type(), device_id,
                                           parallel_desc->device_tag());
-    // OF_PROFILER_RANGE_POP();
+    OF_PROFILER_RANGE_POP();
 
-    // OF_PROFILER_RANGE_GUARD("build_instruction: LocalCallOpKernel");
+    OF_PROFILER_RANGE_PUSH("build_instruction: LocalCallOpKernel");
     builder->LocalCallOpKernel(user_op_expr.mut_kernel(), inputs, *outputs, eager_blob_objects,
                                parallel_desc);
-    // OF_PROFILER_RANGE_POP();
+    OF_PROFILER_RANGE_POP();
   };
 
-  // OF_PROFILER_RANGE_GUARD("NaiveInterpret: LogicalRun");
+  OF_PROFILER_RANGE_PUSH("NaiveInterpret: LogicalRun");
   JUST(LogicalRun(build_instruction));
-  // OF_PROFILER_RANGE_POP();
+  OF_PROFILER_RANGE_POP();
 
   for (int i = 0; i < outputs->size(); ++i) {
-    OF_PROFILER_RANGE_GUARD("NaiveInterpret: BuildEagerMirroredTensorFromEagerBlobObject");
+    OF_PROFILER_RANGE_PUSH("NaiveInterpret: BuildEagerMirroredTensorFromEagerBlobObject");
     (*outputs)[i] = CHECK_JUST(OpInterpUtil::BuildEagerMirroredTensorFromEagerBlobObject(
         (*eager_blob_objects)[i], device));
     OF_PROFILER_RANGE_POP();
