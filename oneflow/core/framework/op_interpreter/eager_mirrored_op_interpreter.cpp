@@ -57,11 +57,8 @@ static Maybe<void> NaiveInterpret(const BuiltinOpExpr& op_expr, const TensorTupl
   OF_PROFILER_RANGE_POP();
 
   // TODO: async
-  OF_PROFILER_RANGE_PUSH("NaiveInterpret: make_shared");
   TensorsPtr eager_blob_objects =
       std::make_shared<std::vector<std::shared_ptr<eager::EagerBlobObject>>>();
-  OF_PROFILER_RANGE_POP();
-
   auto build_instruction = [&](const std::shared_ptr<InstructionsBuilder>& builder) {
     OF_PROFILER_RANGE_PUSH("build_instruction: make_shared");
     auto& user_op_expr = dynamic_cast<const UserOpExpr&>(op_expr);
@@ -78,16 +75,16 @@ static Maybe<void> NaiveInterpret(const BuiltinOpExpr& op_expr, const TensorTupl
     OF_PROFILER_RANGE_POP();
   };
 
-  OF_PROFILER_RANGE_PUSH("NaiveInterpret: LogicalRun");
-  JUST(LogicalRun(build_instruction));
+  OF_PROFILER_RANGE_PUSH("build_instruction: PhysicalRun");
+  JUST(PhysicalRun(build_instruction));
   OF_PROFILER_RANGE_POP();
 
+  OF_PROFILER_RANGE_PUSH("build_instruction: BuildEagerMirroredTensorFromEagerBlobObject");
   for (int i = 0; i < outputs->size(); ++i) {
-    OF_PROFILER_RANGE_PUSH("NaiveInterpret: BuildEagerMirroredTensorFromEagerBlobObject");
     (*outputs)[i] = CHECK_JUST(OpInterpUtil::BuildEagerMirroredTensorFromEagerBlobObject(
         (*eager_blob_objects)[i], device));
-    OF_PROFILER_RANGE_POP();
   }
+  OF_PROFILER_RANGE_POP();
 
   OF_PROFILER_RANGE_POP();
   return Maybe<void>::Ok();
