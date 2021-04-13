@@ -23,6 +23,7 @@ limitations under the License.
 #include "oneflow/core/framework/tensor_impl.h"
 #include "oneflow/core/job/job_build_and_infer_ctx_mgr.h"
 #include "oneflow/core/operator/operator.h"
+#include "oneflow/core/profiler/profiler.h"
 
 namespace oneflow {
 namespace one {
@@ -154,14 +155,32 @@ using Bn2BlobObjectMap = HashMap<std::string, std::shared_ptr<compatible_py::Blo
 /*static*/ Maybe<Tensor> OpInterpUtil::BuildEagerMirroredTensorFromEagerBlobObject(
     const std::shared_ptr<eager::EagerBlobObject>& eager_blob_object,
     const std::shared_ptr<const Device>& device) {
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: GetDTypeByDataType");
   const auto& dtype = JUST(DType::GetDTypeByDataType(eager_blob_object->blob().data_type()));
+  OF_PROFILER_RANGE_POP();
+
   // TODO:
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: shape");
   auto shape = std::make_shared<Shape>(eager_blob_object->blob_desc().shape());
+  OF_PROFILER_RANGE_POP();
+
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: MakeTensor");
   auto tensor = MirroredTensor::MakeTensor(shape, dtype, device, false, false, false, false);
+  OF_PROFILER_RANGE_POP();
+
   // TODO:
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: dynamic_cast");
   auto impl = std::dynamic_pointer_cast<EagerMirroredTensorImpl>(tensor->impl_);
+  OF_PROFILER_RANGE_POP();
+
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: SetEagerBlobObject");
   impl->SetEagerBlobObject(eager_blob_object);
-  return std::static_pointer_cast<Tensor>(tensor);
+  OF_PROFILER_RANGE_POP();
+
+  OF_PROFILER_RANGE_PUSH("BEMTFEB: static_cast");
+  auto ret = std::static_pointer_cast<Tensor>(tensor);
+  OF_PROFILER_RANGE_POP();
+  return ret;
 }
 
 /*static*/ Maybe<Tensor> OpInterpUtil::BuildTensorFromBlobObject(

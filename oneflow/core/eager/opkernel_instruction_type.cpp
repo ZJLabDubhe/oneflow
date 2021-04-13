@@ -587,7 +587,9 @@ struct LocalCallOpKernelUtil final {
     auto* opkernel = operand->mut_opkernel();
     JUST(WithComputeContext(
         operand, device_ctx, [&](user_op::KernelComputeContext* compute_ctx) -> Maybe<void> {
+          OF_PROFILER_RANGE_PUSH("OpKernelCompute:Compute");
           opkernel->mut_user_opkernel()->Compute(compute_ctx, opkernel->mut_opkernel_state());
+          OF_PROFILER_RANGE_POP();
           return Maybe<void>::Ok();
         }));
     return Maybe<void>::Ok();
