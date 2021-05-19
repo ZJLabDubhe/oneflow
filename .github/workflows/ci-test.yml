@@ -1,0 +1,33 @@
+# This is a basic workflow to help you get started with Actions
+
+name: CI Test
+
+# Controls when the action will run. 
+on:
+  # Triggers the workflow on push or pull request events but only for the zj/develop branch
+  push:
+    branches: [ zj/develop ]
+  pull_request:
+    branches: [ zj/develop ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  check_license_and_format:
+    name: License and format
+    runs-on: [self-hosted, linux]
+    if: github.event.pull_request.draft == true
+    steps:
+      - uses: actions/checkout@v2
+      - name: Check license (please run 'make of_format' if failed)
+        run: |
+          python3 ci/check/run_license_format.py -i oneflow -c
+      - name: Check license C++/CUDA format (please run 'make of_format' if failed)
+        run: |
+          python3 ci/check/run_clang_format.py --clang_format_binary clang-format --source_dir oneflow
+      - name: Check Python format (please run 'make of_format' if failed)
+        run: |
+          python3 -m pip install black==19.10b0
+          python3 ci/check/run_py_format.py --source_dir $PWD
