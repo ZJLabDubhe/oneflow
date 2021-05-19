@@ -17,7 +17,7 @@ on:
 jobs:
   check_license_and_format:
     name: License and format
-    runs-on: ubuntu-18.04 # [self-hosted, linux]
+    runs-on: ubuntu-18.04  # [self-hosted, linux]
     if: github.event.pull_request.draft == false
     steps:
       - uses: actions/checkout@v2
