@@ -78,8 +78,8 @@ def download(dry=False):
     if platform.system() != "Linux":
         raise ValueError("Please install clang format 11.0.0")
     url = "https://oneflow-static.oss-cn-beijing.aliyuncs.com/bin/clang-format/linux-x86/clang-format-11"
-    if os.getenv("CI"):
-        url = "https://github.com/Oneflow-Inc/oneflow-fmt/raw/master/clang-format/linux-x86/clang-format-11"
+#     if os.getenv("CI"):
+#         url = "https://github.com/Oneflow-Inc/oneflow-fmt/raw/master/clang-format/linux-x86/clang-format-11"
     dst_dir = ".cache/bin"
     dst = f"{dst_dir}/clang-format"
     if dry:
