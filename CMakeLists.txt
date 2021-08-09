@@ -1,6 +1,14 @@
 # Minimum CMake required
 cmake_minimum_required(VERSION 3.14.0)
 
+string(TOUPPER "${CMAKE_BUILD_TYPE}" uppercase_CMAKE_BUILD_TYPE)
+if(NOT uppercase_CMAKE_BUILD_TYPE MATCHES "^(DEBUG|RELEASE|RELWITHDEBINFO|MINSIZEREL)$")
+    set(CMAKE_BUILD_TYPE "Release")
+endif()
+message(STATUS "CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "")
+
 option(THIRD_PARTY "Build third party" ON)
 option(ONEFLOW "Build oneflow" ON)
 
@@ -17,6 +25,7 @@ option(WITH_TENSORRT "Option to build with TensorRT" OFF)
 option(FOR_CI "" OFF)
 option(BUILD_GIT_VERSION "" ON)
 option(BUILD_PROFILER "" OFF)
+option(OF_SOFTMAX_USE_FAST_MATH "" ON)
 set(RPC_BACKEND "GRPC,LOCAL" CACHE STRING "")
 set(THIRD_PARTY_MIRROR "" CACHE STRING "")
 
@@ -60,6 +69,9 @@ else()
 endif()
 if (BUILD_PROFILER)
   add_definitions(-DOF_ENABLE_PROFILER)
+endif()
+if (OF_SOFTMAX_USE_FAST_MATH)
+  add_definitions(-DOF_SOFTMAX_USE_FAST_MATH)
 endif()
 if (RPC_BACKEND MATCHES "GRPC")
   add_definitions(-DRPC_BACKEND_GRPC)

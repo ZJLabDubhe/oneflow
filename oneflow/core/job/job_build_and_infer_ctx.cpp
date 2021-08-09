@@ -497,7 +497,7 @@ Maybe<OpAttribute> JobBuildAndInferCtx::AddAndInferMirroredOp(const OperatorConf
   CHECK_OR_RETURN(op_conf.has_scope_symbol_id());
   const auto& scope = Global<symbol::Storage<Scope>>::Get()->Get(op_conf.scope_symbol_id());
   const auto* job_desc = JUST(scope.job_desc());
-  const auto& parallel_desc = JUST(scope.GetParallelDesc(op_conf));
+  const auto& parallel_desc = *JUST(scope.GetParallelDesc(op_conf));
   auto op = ConstructOp(op_conf, parallel_desc.device_type());
   JUST(CheckAllInputsConvertableToMirroredBlob(*op));
   int32_t parallel_num = parallel_desc.parallel_num();
@@ -550,7 +550,7 @@ Maybe<const LogicalBlobId*> JobBuildAndInferCtx::GetSubLbi(int64_t scope_symbol_
 Maybe<OpAttribute> JobBuildAndInferCtx::AddAndInferConsistentOp(const OperatorConf& op_conf) {
   CHECK_OR_RETURN(op_conf.has_scope_symbol_id());
   const auto& scope = Global<symbol::Storage<Scope>>::Get()->Get(op_conf.scope_symbol_id());
-  const auto& parallel_desc = JUST(scope.GetParallelDesc(op_conf));
+  const auto& parallel_desc = *JUST(scope.GetParallelDesc(op_conf));
   const auto* job_desc = JUST(scope.job_desc());
   return AddAndInferOp(op_conf, parallel_desc.parallel_conf(), job_desc, false);
 }
@@ -978,6 +978,7 @@ Maybe<void> LazyJobBuildAndInferCtx::Complete() {
     JUST(DoPass("GradientAccumulationRewritePass"));
 #ifdef WITH_CUDA
     JUST(DoPass("AutoMixedPrecision"));
+    JUST(DoPass("PruneAmpWhiteIdentityOpPass"));
 #endif
     JUST(DoPass("OptimizerPlacementOptimizationPass"));
     JUST(DoPass("DynamicLossScaleSchedulePass"));
@@ -990,6 +991,9 @@ Maybe<void> LazyJobBuildAndInferCtx::Complete() {
     JUST(DoPass("CudnnFusedNormalizationAddReluPass"));
     JUST(DoPass("PruneCastToStaticShapeOpsPass"));
     JUST(DoPass("FuseAddToOutputPass"));
+    // run this pass again to fuse ops created in the first run.
+    // TODO(guoran): loop multiple times inside the pass
+    JUST(DoPass("FuseAddToOutputPass"));
     JUST(DoPass("IndexedSlicesOptimizerRewritePass"));
     JUST(DoPass("SplitSparseSoftmaxCrossEntropyOpPass"));
     JUST(DoPass("DoParallelCastBeforeWideningTypeCast"));
@@ -997,6 +1001,7 @@ Maybe<void> LazyJobBuildAndInferCtx::Complete() {
     JUST(DoPass("FuseCastScalePass"));
     JUST(DoPass("PruneParallelCastOpsPass"));
     JUST(DoPass("FuseUpdateOpsPass"));
+    JUST(DoPass("PipelineBufferPass"));
     JUST(DoPass("DumpVariableInfoPass"));
   }
   JUST(DoPass("DumpBlobParallelConfPass"));
@@ -1035,7 +1040,7 @@ void JobBuildAndInferCtx::InferBlobBackwardSignature(Operator* op) {
 void JobBuildAndInferCtx::InferBlobBackwardSignature(
     const Operator& op, std::function<bool(const LogicalBlobId&)>* IsLbiBackwardUsed) {
   const bool is_train = job().job_conf().has_train_conf();
-  if (is_train) {
+  if (!is_train) {
     *IsLbiBackwardUsed = [](const LogicalBlobId&) { return false; };
     return;
   }

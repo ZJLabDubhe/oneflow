@@ -27,7 +27,7 @@ namespace vm {
 
 namespace {
 
-bool IsSourceInstruction(const InstructionMsg& instr_msg) {
+bool HasImmediateOperandsOnly(const InstructionMsg& instr_msg) {
   for (const auto& instr_operand : instr_msg.operand()) {
     if (instr_operand->has_const_operand()) { return false; }
     if (instr_operand->has_mut_operand()) { return false; }
@@ -68,7 +68,6 @@ void VirtualMachine::TryReleaseFinishedInstructions(
     Stream* stream,
     /*out*/ ReadyInstructionList* ready_instruction_list) {
   auto* running_instruction_list = stream->mut_running_instruction_list();
-  auto* front_seq_infer_list = mutable_front_seq_infer_instr_list();
   auto* front_seq_compute_list = mutable_front_seq_compute_instr_list();
   auto* vm_stat_running_list = mut_vm_stat_running_instruction_list();
   while (true) {
@@ -77,8 +76,7 @@ void VirtualMachine::TryReleaseFinishedInstructions(
     ReleaseInstruction(instruction_ptr, /*out*/ ready_instruction_list);
     const auto interpret_type = instruction_ptr->stream().stream_type_id().interpret_type();
     if (interpret_type == kInfer) {
-      CHECK(!instruction_ptr->is_front_seq_infer_instr_link_empty());
-      front_seq_infer_list->Erase(instruction_ptr);
+      // do nothing
     } else if (interpret_type == kCompute) {
       CHECK(!instruction_ptr->is_front_seq_compute_instr_link_empty());
       front_seq_compute_list->Erase(instruction_ptr);
@@ -90,12 +88,13 @@ void VirtualMachine::TryReleaseFinishedInstructions(
   }
 }
 
-void VirtualMachine::FilterAndRunSourceInstructions(TmpPendingInstrMsgList* instr_msg_list) {
+void VirtualMachine::FilterAndRunInstructionsInAdvance(TmpPendingInstrMsgList* instr_msg_list) {
   OBJECT_MSG_LIST_FOR_EACH_PTR(instr_msg_list, instr_msg) {
     const auto& instr_type_id = instr_msg->instr_type_id();
-    const StreamType& stream_type = instr_type_id.stream_type_id().stream_type();
-    if (stream_type.IsControlStreamType() && !instr_type_id.instruction_type().IsSequential()
-        && IsSourceInstruction(*instr_msg)) {
+    if (instr_type_id.instruction_type().ResettingIdToObjectMap()) {
+      const StreamType& stream_type = instr_type_id.stream_type_id().stream_type();
+      CHECK(stream_type.IsControlStreamType());
+      CHECK(HasImmediateOperandsOnly(*instr_msg));
       const auto& parallel_desc = CHECK_JUST(GetInstructionParallelDesc(*instr_msg));
       if (!parallel_desc || parallel_desc->ContainingMachineId(this_machine_id())) {
         stream_type.Run(this, instr_msg);
@@ -124,7 +123,6 @@ bool IsStreamInParallelDesc(const ParallelDesc* parallel_desc, const Stream& str
 
 void VirtualMachine::MakeInstructions(TmpPendingInstrMsgList* instr_msg_list,
                                       /*out*/ NewInstructionList* new_instruction_list) {
-  auto* front_seq_infer_list = mutable_front_seq_infer_instr_list();
   auto* front_seq_compute_list = mutable_front_seq_compute_instr_list();
   OBJECT_MSG_LIST_FOR_EACH_PTR(instr_msg_list, instr_msg) {
     const StreamTypeId& stream_type_id = instr_msg->instr_type_id().stream_type_id();
@@ -141,7 +139,7 @@ void VirtualMachine::MakeInstructions(TmpPendingInstrMsgList* instr_msg_list,
       if (!IsStreamInParallelDesc(parallel_desc.get(), *stream)) { continue; }
       ObjectMsgPtr<Instruction> instr = stream->NewInstruction(instr_msg, parallel_desc);
       if (stream_type_id.interpret_type() == kInfer) {
-        front_seq_infer_list->PushBack(instr.Mutable());
+        // do nothing
       } else if (stream_type_id.interpret_type() == kCompute) {
         front_seq_compute_list->PushBack(instr.Mutable());
       } else {
@@ -153,15 +151,19 @@ void VirtualMachine::MakeInstructions(TmpPendingInstrMsgList* instr_msg_list,
   }
 }
 
-Maybe<ParallelDesc> VirtualMachine::GetInstructionParallelDesc(const InstructionMsg& instr_msg) {
-  static const std::shared_ptr<ParallelDesc> empty_ptr;
+Maybe<const ParallelDesc> VirtualMachine::GetInstructionParallelDesc(
+    const InstructionMsg& instr_msg) {
+  static const std::shared_ptr<const ParallelDesc> empty_ptr;
+  if (instr_msg.parallel_desc()) { return instr_msg.parallel_desc(); }
   if (!instr_msg.has_parallel_desc_symbol_id()) { return empty_ptr; }
   int64_t symbol_id = instr_msg.parallel_desc_symbol_id();
   auto* logical_object = mut_id2logical_object()->FindPtr(symbol_id);
   CHECK_NOTNULL_OR_RETURN(logical_object) << "symbol_id: " << symbol_id;
   auto* map = logical_object->mut_global_device_id2mirrored_object();
   CHECK_EQ_OR_RETURN(map->size(), 1);
-  return JUST(map->Begin()->rw_mutexed_object().Get<ObjectWrapper<ParallelDesc>>()).GetPtr();
+  const std::shared_ptr<const ParallelDesc> parallel_desc =
+      JUST(map->Begin()->rw_mutexed_object().Get<ObjectWrapper<ParallelDesc>>()).GetPtr();
+  return parallel_desc;
 }
 
 MirroredObject* VirtualMachine::MutMirroredObject(int64_t logical_object_id,
@@ -210,6 +212,30 @@ void VirtualMachine::ForEachConstMirroredObject(
   }
 }
 
+namespace {
+
+template<typename CallbackT>
+void ForEachConstMirroredObject4ConstPhyInstrOperand(InterpretType interpret_type,
+                                                     const PhyInstrOperand& phy_instr_operand,
+                                                     const CallbackT& Callback) {
+  if (interpret_type == InterpretType::kCompute) {
+    phy_instr_operand.ForEachConstMirroredObject(
+        [&](MirroredObject* infer, MirroredObject* compute) {
+          if (infer != nullptr) { Callback(infer); }
+          if (compute != nullptr) { Callback(compute); }
+        });
+  } else if (interpret_type == InterpretType::kInfer) {
+    phy_instr_operand.ForEachConstMirroredObject(
+        [&](MirroredObject* infer, MirroredObject* compute) {
+          if (infer != nullptr) { Callback(infer); }
+        });
+  } else {
+    UNIMPLEMENTED();
+  }
+}
+
+}  // namespace
+
 template<OperandMemZoneModifier mem_zone_modifier, typename DoEachT>
 void VirtualMachine::ForEachConstMirroredObject(
     const InterpretType interpret_type, Id2LogicalObject* id2logical_object,
@@ -219,11 +245,30 @@ void VirtualMachine::ForEachConstMirroredObject(
   if (interpret_type == InterpretType::kCompute) {
     ForEachMirroredObject<&IdUtil::GetTypeId>(id2logical_object, operand, global_device_id, DoEach);
   } else if (interpret_type == InterpretType::kInfer) {
-    // do nothing
+    // Do nothing
   } else {
     UNIMPLEMENTED();
   }
 }
+
+namespace {
+
+template<typename CallbackT>
+void ForEachConstMirroredObject4MutPhyInstrOperand(InterpretType interpret_type,
+                                                   const PhyInstrOperand& phy_instr_operand,
+                                                   const CallbackT& Callback) {
+  if (interpret_type == InterpretType::kCompute) {
+    phy_instr_operand.ForEachMutMirroredObject([&](MirroredObject* infer, MirroredObject* compute) {
+      if (infer != nullptr) { Callback(infer); }
+    });
+  } else if (interpret_type == InterpretType::kInfer) {
+    // Do nothing
+  } else {
+    UNIMPLEMENTED();
+  }
+}
+
+}  // namespace
 
 template<OperandMemZoneModifier mem_zone_modifier, typename DoEachT>
 void VirtualMachine::ForEachMutMirroredObject(
@@ -240,6 +285,26 @@ void VirtualMachine::ForEachMutMirroredObject(
     UNIMPLEMENTED();
   }
 }
+
+namespace {
+
+template<typename CallbackT>
+void ForEachMutMirroredObject4MutPhyInstrOperand(InterpretType interpret_type,
+                                                 const PhyInstrOperand& phy_instr_operand,
+                                                 const CallbackT& Callback) {
+  if (interpret_type == InterpretType::kCompute) {
+    phy_instr_operand.ForEachMutMirroredObject(
+        [&](MirroredObject* infer, MirroredObject* compute) { Callback(compute); });
+  } else if (interpret_type == InterpretType::kInfer) {
+    phy_instr_operand.ForEachMutMirroredObject([&](MirroredObject* infer, MirroredObject* compute) {
+      if (infer != nullptr) { Callback(infer); }
+    });
+  } else {
+    UNIMPLEMENTED();
+  }
+}
+
+}  // namespace
 
 template<OperandMemZoneModifier mem_zone_modifier, typename DoEachT>
 void VirtualMachine::ForEachMutMirroredObject(
@@ -257,6 +322,30 @@ void VirtualMachine::ForEachMutMirroredObject(
     UNIMPLEMENTED();
   }
 }
+
+namespace {
+
+template<typename CallbackT>
+void ForEachMutMirroredObject4Mut2PhyInstrOperand(InterpretType interpret_type,
+                                                  const PhyInstrOperand& phy_instr_operand,
+                                                  const CallbackT& Callback) {
+  if (interpret_type == InterpretType::kCompute) {
+    phy_instr_operand.ForEachMut2MirroredObject(
+        [&](MirroredObject* infer, MirroredObject* compute) {
+          if (infer != nullptr) { Callback(infer); }
+          Callback(compute);
+        });
+  } else if (interpret_type == InterpretType::kInfer) {
+    phy_instr_operand.ForEachMut2MirroredObject(
+        [&](MirroredObject* infer, MirroredObject* compute) {
+          if (infer != nullptr) { Callback(infer); }
+        });
+  } else {
+    UNIMPLEMENTED();
+  }
+}
+
+}  // namespace
 
 template<OperandMemZoneModifier mem_zone_modifier, typename DoEachT>
 void VirtualMachine::ForEachMutMirroredObject(
@@ -291,9 +380,8 @@ void VirtualMachine::ConnectInstruction(Instruction* src_instruction,
   CHECK_NE(src_instruction, dst_instruction);
   auto edge = ObjectMsgPtr<InstructionEdge>::NewFrom(mut_vm_thread_only_allocator(),
                                                      src_instruction, dst_instruction);
-  bool src_inserted = src_instruction->mut_out_edges()->Insert(edge.Mutable()).second;
-  bool dst_inserted = dst_instruction->mut_in_edges()->Insert(edge.Mutable()).second;
-  CHECK_EQ(src_inserted, dst_inserted);
+  src_instruction->mut_out_edges()->PushBack(edge.Mutable());
+  dst_instruction->mut_in_edges()->PushBack(edge.Mutable());
 }
 
 void VirtualMachine::ConsumeMirroredObjects(Id2LogicalObject* id2logical_object,
@@ -314,13 +402,10 @@ void VirtualMachine::ConsumeMirroredObjects(Id2LogicalObject* id2logical_object,
     };
     const auto& phy_instr_operand = instruction->instr_msg().phy_instr_operand();
     if (phy_instr_operand) {
-      if (interpret_type == kInfer) {
-        phy_instr_operand->ForEachInferMutMirroredObject(ConsumeMutMirroredObject);
-      } else if (interpret_type == kCompute) {
-        phy_instr_operand->ForEachComputeMutMirroredObject(ConsumeMutMirroredObject);
-      } else {
-        UNIMPLEMENTED();
-      }
+      ForEachMutMirroredObject4Mut2PhyInstrOperand(interpret_type, *phy_instr_operand,
+                                                   ConsumeMutMirroredObject);
+      ForEachMutMirroredObject4MutPhyInstrOperand(interpret_type, *phy_instr_operand,
+                                                  ConsumeMutMirroredObject);
     }
     const auto& operands = instruction->instr_msg().operand();
     for (const auto& operand : operands) {
@@ -347,13 +432,10 @@ void VirtualMachine::ConsumeMirroredObjects(Id2LogicalObject* id2logical_object,
       }
     }
     if (phy_instr_operand) {
-      if (interpret_type == kInfer) {
-        phy_instr_operand->ForEachInferConstMirroredObject(ConsumeConstMirroredObject);
-      } else if (interpret_type == kCompute) {
-        phy_instr_operand->ForEachComputeConstMirroredObject(ConsumeConstMirroredObject);
-      } else {
-        UNIMPLEMENTED();
-      }
+      ForEachConstMirroredObject4MutPhyInstrOperand(interpret_type, *phy_instr_operand,
+                                                    ConsumeConstMirroredObject);
+      ForEachConstMirroredObject4ConstPhyInstrOperand(interpret_type, *phy_instr_operand,
+                                                      ConsumeConstMirroredObject);
     }
     for (const auto& operand : operands) {
       if (operand->has_const_operand()) {
@@ -454,8 +536,8 @@ void VirtualMachine::TryMoveWaitingToReady(Instruction* instruction, ReadyList* 
                                            const IsEdgeReadyT& IsEdgeReady) {
   auto* wait_instruction_list = mut_waiting_instruction_list();
   auto* out_edges = instruction->mut_out_edges();
-  OBJECT_MSG_SKIPLIST_FOR_EACH_PTR(out_edges, out_edge) {
-    Instruction* out_instruction = out_edge->dst_instruction();
+  OBJECT_MSG_LIST_FOR_EACH_PTR(out_edges, out_edge) {
+    Instruction* out_instruction = out_edge->mut_dst_instruction();
     if (!IsEdgeReady(out_instruction)) { continue; }
     out_edges->Erase(out_edge);
     out_instruction->mut_in_edges()->Erase(out_edge);
@@ -494,8 +576,15 @@ void VirtualMachine::__Init__(const VmDesc& vm_desc, ObjectMsgAllocator* allocat
 void VirtualMachine::Receive(InstructionMsgList* compute_instr_msg_list) {
   InstructionMsgList new_instr_msg_list;
   OBJECT_MSG_LIST_FOR_EACH_PTR(compute_instr_msg_list, compute_instr_msg) {
-    new_instr_msg_list.EmplaceBack(compute_instr_msg->MakeInferInstrMsg());
+    if (!compute_instr_msg->phy_instr_operand()) {
+      new_instr_msg_list.EmplaceBack(compute_instr_msg->MakeInferInstrMsg());
+    }
     compute_instr_msg_list->MoveToDstBack(compute_instr_msg, &new_instr_msg_list);
+  }
+  static const int64_t kHighWaterMark = 500;
+  static const int64_t kLowWaterMark = 200;
+  if (*mut_flying_instruction_cnt() > kHighWaterMark) {
+    while (*mut_flying_instruction_cnt() > kLowWaterMark) {}
   }
   mut_pending_msg_list()->MoveFrom(&new_instr_msg_list);
 }
@@ -525,7 +614,6 @@ void VirtualMachine::TryRunFrontSeqInstruction(
 }
 
 void VirtualMachine::TryRunFrontSeqInstruction(ReadyInstructionList* ready_instruction_list) {
-  TryRunFrontSeqInstruction(mutable_front_seq_infer_instr_list(), ready_instruction_list);
   TryRunFrontSeqInstruction(mutable_front_seq_compute_instr_list(), ready_instruction_list);
 }
 
@@ -564,7 +652,7 @@ void VirtualMachine::Schedule() {
   if (pending_msg_list().size() > 0) {
     TmpPendingInstrMsgList tmp_pending_msg_list;
     mut_pending_msg_list()->MoveTo(&tmp_pending_msg_list);
-    FilterAndRunSourceInstructions(&tmp_pending_msg_list);
+    FilterAndRunInstructionsInAdvance(&tmp_pending_msg_list);
     NewInstructionList new_instruction_list;
     MakeInstructions(&tmp_pending_msg_list, /*out*/ &new_instruction_list);
     ConsumeMirroredObjects(mut_id2logical_object(), &new_instruction_list);
@@ -572,12 +660,14 @@ void VirtualMachine::Schedule() {
     new_instruction_list.MoveTo(waiting_instruction_list);
   }
   DispatchAndPrescheduleInstructions(ready_instruction_list);
+  *mut_flying_instruction_cnt() = mut_waiting_instruction_list()->size()
+                                  + mut_ready_instruction_list()->size()
+                                  + mutable_vm_stat_running_instruction_list()->size();
 }
 
 bool VirtualMachine::Empty() const {
   return pending_msg_list().empty() && waiting_instruction_list().empty()
-         && active_stream_list().empty() && front_seq_infer_instr_list().empty()
-         && front_seq_compute_instr_list().empty();
+         && active_stream_list().empty() && front_seq_compute_instr_list().empty();
 }
 
 }  // namespace vm

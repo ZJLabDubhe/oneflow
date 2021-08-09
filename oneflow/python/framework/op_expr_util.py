@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import oneflow as flow
-import oneflow_api
+import oneflow._oneflow_internal
 from oneflow.python.framework.attr_util import convert_to_user_attr_value
 
 
@@ -27,22 +27,20 @@ def user_op_expr_call(self, *args, **kwargs):
                 arg.determine()
             args[i] = arg._local_or_consistent_tensor
 
-    attrs = oneflow_api.AttrValueMap()
+    attrs = oneflow._oneflow_internal.MutableCfgAttrMap()
     for attr_name, attr_value in kwargs.items():
         assert isinstance(attr_name, str)
         attrs[attr_name] = convert_to_user_attr_value(
             self.op_type_name, attr_name, attr_value
         )
 
-    results = list(self.apply(args, attrs))
-    for i, out in enumerate(results):
-        tensor = flow.Tensor(*out.shape)
-        tensor._local_or_consistent_tensor = out
-        tensor._undetermined_tensor = None
-        results[i] = tensor
+    try:
+        results = self.apply(args, attrs)
+    except flow._oneflow_internal.exception.Exception:
+        raise oneflow._oneflow_internal.exception.GetThreadLocalLastError()
 
     return results
 
 
 def RegisterMethod4UserOpExpr():
-    oneflow_api.one.UserOpExpr.__call__ = user_op_expr_call
+    oneflow._oneflow_internal.one.UserOpExpr.__call__ = user_op_expr_call

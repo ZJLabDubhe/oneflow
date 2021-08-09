@@ -19,9 +19,9 @@ else()
     set(PROTOBUF_BUILD_LIBRARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/protobuf/src/protobuf)
     if(BUILD_SHARED_LIBS)
       set(PB_VER 3.9.2.0)
-      if(${CMAKE_SHARED_LIBRARY_SUFFIX} STREQUAL ".dylib")
+      if("${CMAKE_SHARED_LIBRARY_SUFFIX}" STREQUAL ".dylib")
         set(PROTOBUF_LIBRARY_NAMES libprotobuf.${PB_VER}.dylib)
-      elseif(${CMAKE_SHARED_LIBRARY_SUFFIX} STREQUAL ".so")
+      elseif("${CMAKE_SHARED_LIBRARY_SUFFIX}" STREQUAL ".so")
         set(PROTOBUF_LIBRARY_NAMES libprotobuf.so.${PB_VER})
       else()
         message(FATAL_ERROR "${CMAKE_SHARED_LIBRARY_SUFFIX} not support for protobuf")
@@ -90,4 +90,5 @@ add_custom_target(protobuf_copy_binary_to_destination
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${PROTOBUF_BUILD_PROTOC_EXECUTABLE} ${PROTOBUF_BINARY_DIR}
   DEPENDS protobuf_create_binary_dir)
 
+set(PROTOBUF_COPY_TARGETS protobuf_copy_binary_to_destination protobuf_copy_headers_to_destination protobuf_copy_libs_to_destination)
 endif(THIRD_PARTY)

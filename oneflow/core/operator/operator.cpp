@@ -15,11 +15,13 @@ limitations under the License.
 */
 #include "oneflow/core/common/balanced_splitter.h"
 #include "oneflow/core/vm/symbol_storage.h"
+#include "oneflow/core/framework/instructions_builder.h"
 #include "oneflow/core/framework/to_string.h"
 #include "oneflow/core/framework/user_op_registry_manager.h"
 #include "oneflow/core/job/mirrored_sig_infer_hint.h"
 #include "oneflow/core/job/sbp_signature_builder.h"
 #include "oneflow/core/job/scope.h"
+#include "oneflow/core/job/sbp_parallel.cfg.h"
 #include "oneflow/core/operator/operator.h"
 #include "oneflow/core/operator/op_node_signature.pb.h"
 #include "oneflow/core/job/parallel_distribution_infer_hint.h"
@@ -899,6 +901,7 @@ void Operator::GenKernelConf(
     if (blob_desc == nullptr) { continue; }
     (*dtype_signature->mutable_name2dtype())[ibn] = blob_desc->data_type();
   }
+
   CHECK_JUST(ToOpAttribute(kernel_conf->mutable_op_attribute()));
   if (HasBlobDescWithField(GetBlobDesc4BnInOp, output_bns(),
                            [](const BlobDesc* blob_desc) { return blob_desc->is_dynamic(); })) {
@@ -912,6 +915,7 @@ void Operator::GenKernelConf(
     }
     kernel_conf->set_data_type(data_type);
   }
+
   if (parallel_ctx != nullptr) { *(kernel_conf->mutable_parallel_ctx()) = *parallel_ctx; }
 
   VirtualGenKernelConf(GetBlobDesc4BnInOp, parallel_ctx, kernel_conf);
@@ -1182,7 +1186,8 @@ Maybe<void> Operator::ToOpAttribute(OpAttribute* op_attribute) const {
   if (bn2parallel_desc_) {
     auto* map = op_attribute->mutable_parallel_conf_signature()->mutable_bn_in_op2parallel_conf();
     for (const auto& pair : *bn2parallel_desc_) {
-      (*map)[pair.first] = pair.second->parallel_conf();
+      const bool has_same_parallel_conf_as_op = *op_parallel_desc_ == *pair.second;
+      if (!has_same_parallel_conf_as_op) { (*map)[pair.first] = pair.second->parallel_conf(); }
     }
   }
   if (op_parallel_desc_ && bn2parallel_desc_) {
@@ -1197,10 +1202,19 @@ Maybe<void> Operator::ToOpAttribute(OpAttribute* op_attribute) const {
         if (*pair.second == *op_parallel_desc_) {
           (*symbol_map)[pair.first] = parallel_desc_symbol_id;
         } else {
-          (*symbol_map)[pair.first] =
-              (*Global<std::shared_ptr<ForeignCallback>>::Get())
-                  ->MakeParallelDescSymbol(
-                      std::make_shared<cfg::ParallelConf>(pair.second->parallel_conf()));
+          const auto parallel_conf =
+              std::make_shared<cfg::ParallelConf>(pair.second->parallel_conf());
+          const auto MakeParallelDescSymbol = [&parallel_conf]() -> int64_t {
+            int64_t symbol_id;
+            const auto BuildInstruction =
+                [&symbol_id, &parallel_conf](InstructionsBuilder* builder) -> Maybe<void> {
+              symbol_id = JUST(JUST(builder->GetParallelDescSymbol(parallel_conf))->symbol_id());
+              return Maybe<void>::Ok();
+            };
+            LogicalRun(BuildInstruction);
+            return symbol_id;
+          };
+          (*symbol_map)[pair.first] = MakeParallelDescSymbol();
         }
       }
       for (const auto& tbn : tmp_bns()) { (*symbol_map)[tbn] = parallel_desc_symbol_id; }
@@ -1369,7 +1383,7 @@ Maybe<void> CheckOpInputSignature(const Operator& op, const OpNodeSignature& ups
 
 Maybe<Operator> ConstructAndInferOp(const OperatorConf& op_conf,
                                     const OpNodeSignature& upstream_signature, const Scope& scope) {
-  const auto& parallel_desc = JUST(scope.GetParallelDesc(op_conf));
+  const auto& parallel_desc = *JUST(scope.GetParallelDesc(op_conf));
   bool is_mirrored = scope.opt_mirrored_parallel_conf().has_mirrored_parallel();
   const auto& op = ConstructOp(op_conf);
   JUST(CheckOpInputSignature(*op, upstream_signature));
@@ -1396,8 +1410,9 @@ Maybe<Operator> ConstructAndInferOp(const OperatorConf& op_conf,
 
 namespace {
 
+template<typename SbpParallelT>
 Maybe<Shape> Get1dHierarchyPhysicalShape(const Shape& logical_shape,
-                                         const SbpParallel& sbp_parallel,
+                                         const SbpParallelT& sbp_parallel,
                                          const int64_t parallel_num, const int64_t parallel_id) {
   std::shared_ptr<Shape> physical = std::make_shared<Shape>(logical_shape);
   if (sbp_parallel.has_split_parallel()) {
@@ -1413,12 +1428,13 @@ Maybe<Shape> Get1dHierarchyPhysicalShape(const Shape& logical_shape,
   return physical;
 }
 
+template<typename ParallelDistributionT>
 Maybe<Shape> GetNdHierarchyPhysicalShape(const Shape& logical_shape,
-                                         const ParallelDistribution& parallel_distribution,
+                                         const ParallelDistributionT& parallel_distribution,
                                          const Shape& parallel_hierarchy) {
   std::shared_ptr<Shape> physical = std::make_shared<Shape>(logical_shape);
   FOR_RANGE(int64_t, i, 0, parallel_hierarchy.NumAxes()) {
-    const SbpParallel& sbp_parallel = parallel_distribution.sbp_parallel(i);
+    const auto& sbp_parallel = parallel_distribution.sbp_parallel(i);
     if (sbp_parallel.has_split_parallel()) {
       const int64_t split_axis = sbp_parallel.split_parallel().axis();
       CHECK_EQ_OR_RETURN(physical->At(split_axis) % parallel_hierarchy.At(i), 0);
@@ -1430,21 +1446,53 @@ Maybe<Shape> GetNdHierarchyPhysicalShape(const Shape& logical_shape,
 
 }  // namespace
 
+template<typename ParallelDistributionT>
 Maybe<Shape> GetPhysicalShape(const Shape& logical_shape,
-                              const ParallelDistribution& parallel_distribution,
-                              const ParallelDesc& parallel_desc,
-                              const ParallelContext& parallel_ctx) {
-  CHECK_LT_OR_RETURN(parallel_ctx.parallel_id(), parallel_desc.hierarchy()->elem_cnt());
+                              const ParallelDistributionT& parallel_distribution,
+                              const ParallelDesc& parallel_desc, std::size_t parallel_id) {
+  CHECK_GE_OR_RETURN(parallel_id, 0);
+  CHECK_LT_OR_RETURN(parallel_id, parallel_desc.hierarchy()->elem_cnt());
   CHECK_EQ_OR_RETURN(parallel_desc.hierarchy()->NumAxes(),
                      parallel_distribution.sbp_parallel_size());
   if (parallel_desc.hierarchy()->NumAxes() == 1) {
     return Get1dHierarchyPhysicalShape(logical_shape, parallel_distribution.sbp_parallel(0),
-                                       parallel_desc.hierarchy()->elem_cnt(),
-                                       parallel_ctx.parallel_id());
+                                       parallel_desc.hierarchy()->elem_cnt(), parallel_id);
   } else {
     return GetNdHierarchyPhysicalShape(logical_shape, parallel_distribution,
                                        *parallel_desc.hierarchy());
   }
+}
+
+template Maybe<Shape> GetPhysicalShape(const Shape& logical_shape,
+                                       const ParallelDistribution& parallel_distribution,
+                                       const ParallelDesc& parallel_desc, std::size_t parallel_id);
+
+template Maybe<Shape> GetPhysicalShape(const Shape& logical_shape,
+                                       const cfg::ParallelDistribution& parallel_distribution,
+                                       const ParallelDesc& parallel_desc, std::size_t parallel_id);
+
+Maybe<Shape> GetPhysicalShape(const Shape& logical_shape,
+                              const ParallelDistribution& parallel_distribution,
+                              const ParallelDesc& parallel_desc,
+                              const ParallelContext& parallel_ctx) {
+  return GetPhysicalShape(logical_shape, parallel_distribution, parallel_desc,
+                          parallel_ctx.parallel_id());
+}
+
+Maybe<Shape> GetLogicalShape(const Shape& physical_shape,
+                             const cfg::ParallelDistribution& parallel_distribution,
+                             const ParallelDesc& parallel_desc) {
+  const auto& parallel_hierarchy = *parallel_desc.hierarchy();
+  CHECK_EQ_OR_RETURN(parallel_hierarchy.NumAxes(), parallel_distribution.sbp_parallel_size());
+  std::shared_ptr<Shape> logical_shape = std::make_shared<Shape>(physical_shape);
+  for (int i = parallel_hierarchy.NumAxes() - 1; i >= 0; --i) {
+    const auto& sbp_parallel = parallel_distribution.sbp_parallel(i);
+    if (sbp_parallel.has_split_parallel()) {
+      const int64_t split_axis = sbp_parallel.split_parallel().axis();
+      logical_shape->Set(split_axis, logical_shape->At(split_axis) * parallel_hierarchy.At(i));
+    }
+  }
+  return logical_shape;
 }
 
 }  // namespace oneflow
