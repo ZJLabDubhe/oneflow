@@ -335,6 +335,7 @@ void MergeSharedInterfaceMemBlock(const std::vector<std::shared_ptr<Job>>& jobs,
 
 }  // namespace
 
+// Job之间的内存共享
 void InterJobMemSharingUtil::MergeMemSharedInterfaceMemBlockBetweenJobs(
     const std::vector<std::shared_ptr<Job>>& jobs, Plan* plan) {
   if (jobs.size() == 1) { return; }
@@ -352,6 +353,7 @@ void InterJobMemSharingUtil::MergeMemSharedInterfaceMemBlockBetweenJobs(
   }
 }
 
+// Job之间的内存复用
 void InterJobMemSharingUtil::MergeMemReusedChunkBetweenUserJobs(
     const std::vector<std::shared_ptr<Job>>& user_jobs, Plan* plan) {
   if (user_jobs.size() == 1) { return; }

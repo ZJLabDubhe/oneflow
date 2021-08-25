@@ -402,6 +402,7 @@ void MergePlanWithoutGenNetTopo(Plan* plan, Plan&& other) {
   }
 }
 
+// 将SubPlan合并到一个大的MergedPlan中
 void MergeSubPlanWithoutGenNetTopo(Plan* plan, std::vector<Plan>&& sub_plans) {
   CHECK(!sub_plans.empty());
   *plan = std::move(sub_plans.at(0));
@@ -951,6 +952,7 @@ bool NeedAllocateMemory(const RegstDescTypeProto& regst_desc_type) {
   return regst_desc_type.has_data_regst_desc();
 }
 
+// 计算临界区
 void FinishGlobalCriticalSectionDesc(const Plan& plan, int64_t job_size) {
   std::vector<HashMap<std::string, HashSet<int64_t>>> job_id2sole_op_name2mem_block_ids(job_size);
   std::vector<HashSet<int64_t>> job_id2mem_block_ids(job_size);

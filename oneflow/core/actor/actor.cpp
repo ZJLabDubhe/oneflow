@@ -131,7 +131,7 @@ void Actor::TakeOverInplaceConsumedAndProduced(
   }
 }
 
-// 构建输入regst的slot
+// 构建输入RegstSlot
 void Actor::TakeOverNaiveConsumed(const PbMap<std::string, RegstDescIdSet>& consumed_ids) {
   auto res = GetNaiveOrCustomizedConsumedRegstDescName();
   bool is_naive_names = res.first == RegstNameType::kNaive;
@@ -150,7 +150,7 @@ void Actor::TakeOverNaiveConsumed(const PbMap<std::string, RegstDescIdSet>& cons
   naive_consumed_rs_.InitedDone();
 }
 
-// 构建输出regst的slot
+// 构建输出RegstSlot
 void Actor::TakeOverNaiveProduced(const PbMap<std::string, RegstDescProto>& produced_ids) {
   auto res = GetNaiveOrCustomizedProducedRegstDescName();
   bool is_naive_names = res.first == RegstNameType::kNaive;
@@ -173,6 +173,7 @@ void Actor::TakeOverNaiveProduced(const PbMap<std::string, RegstDescProto>& prod
   }
 }
 
+// 根据task信息，构建ExecKernel中的bn_in_op2blob_info
 void Actor::InitBnInOp2BlobInfo(const TaskProto& task_proto) {
   for (int64_t i = 0; i < exec_kernel_vec_.size(); ++i) {
     ExecKernel& ek = exec_kernel_vec_.at(i);
@@ -298,6 +299,7 @@ bool Actor::ReceiveEordMsg(int64_t regst_desc_id) const {
   return eord_regst_desc_ids_.find(regst_desc_id) != eord_regst_desc_ids_.end();
 }
 
+// Actor正常运行过程中处理消息
 int Actor::HandlerNormal(const ActorMsg& msg) {
   if (msg.msg_type() == ActorMsgType::kEordMsg) {
     remaining_eord_cnt_ -= 1;
@@ -312,6 +314,7 @@ int Actor::HandlerNormal(const ActorMsg& msg) {
   } else if (msg.msg_type() == ActorMsgType::kRegstMsg) {
     if (msg.SrcMachineId() == GlobalProcessCtx::Rank()) {
       Regst* regst = msg.regst();
+      // 如果是上游Actor发出的msg，表示输入Regst可读
       if (naive_consumed_rs_.HasRegstDescId(regst->regst_desc_id())) {
         CHECK_EQ(0, naive_consumed_rs_.TryPushBackRegst(regst));
         const auto& rdeq = naive_consumed_rs_.RegstDeq4RegstDescId(regst->regst_desc_id());
@@ -324,6 +327,7 @@ int Actor::HandlerNormal(const ActorMsg& msg) {
         int64_t out_regst_desc_id = inplace_regst_desc_id_in2out_.at(regst->regst_desc_id());
         CHECK(regst->GetSoleBlob()->dptr()
               == inplace_produced_rs_.Front(out_regst_desc_id)->GetSoleBlob()->dptr());
+      // 如果是下游Actor发出的msg
       } else if (TryUpdtStateAsProducedRegst(regst) == 0) {
         // do nothing
       } else {
@@ -358,7 +362,7 @@ int Actor::HandlerNormal(const ActorMsg& msg) {
       (is_naive_consumed_eord_ || is_inplace_consumed_eord_)
       && (naive_consumed_rs_.available_regst_desc_cnt() == 0
           && inplace_consumed_rs_.available_regst_desc_cnt() == 0);
-  // 首先发送结束信息的Actor的关键逻辑
+  // 源Actor在满足结束条件时返回true
   bool customized_eord = IsCustomizedReadAlwaysUnReadyFromNow();
   if ((has_naive_or_inplace && naive_or_inplace_eord_and_empty)
       || (!has_naive_or_inplace && customized_eord)) {
@@ -376,6 +380,7 @@ int Actor::HandlerNormal(const ActorMsg& msg) {
   return 0;
 }
 
+// Actor有序退出过程中处理消息
 int Actor::HandlerZombie(const ActorMsg& msg) {
   if (msg.msg_type() == ActorMsgType::kEordMsg) {
     CHECK_GE(remaining_eord_cnt_, 1);
@@ -519,7 +524,7 @@ void Actor::AsyncSendProducedCtrlRegstMsgToConsumer() {
   naive_produced_rs_.PopFrontRegsts(tmp_regst_desc_id_vec_);
 }
 
-// 向下游actor发送regst信息
+// 向下游Actor发送RegstMsg，返回下游Actor个数
 int64_t Actor::HandleRegstToConsumer(Regst* regst, std::function<bool(int64_t)> IsAllowedActor) {
   auto regst_reading_cnt_it = produced_regst2reading_cnt_.find(regst);
   CHECK_EQ(regst_reading_cnt_it->second, 0);
@@ -546,9 +551,11 @@ bool Actor::IsWriteReady() const {
          && IsCustomizedWriteReady();
 }
 
+// 启动Kernel序列
 void Actor::AsyncLaunchKernel(const KernelCtx& kernel_ctx,
                               std::function<Regst*(int64_t)> Regst4RegstDescId) {
   for (const ExecKernel& ek : exec_kernel_vec_) {
+    // 传入BnInOp2Blob函数，用来找到对应bn_in_op的Blob
     ek.kernel->Launch(kernel_ctx, [&](const std::string& bn_in_op) -> Blob* {
       const auto blob_info_it = ek.bn_in_op2blob_info.find(bn_in_op);
       if (blob_info_it == ek.bn_in_op2blob_info.cend()) { return nullptr; }
@@ -577,6 +584,7 @@ void Actor::AsyncLaunchKernel(const KernelCtx& kernel_ctx) {
   });
 }
 
+// 向下游Actor发送RegstMsg，从输出RegstSlot中移除对应的Regst
 void Actor::HandleProducedNaiveDataRegstToConsumer(std::function<bool(Regst*)> RegstPreProcess,
                                                    std::function<bool(int64_t)> IsAllowedActor) {
   tmp_regst_desc_id_vec_.clear();
@@ -635,7 +643,7 @@ void Actor::AsyncSendRegstMsgToConsumer(Regst* regst, std::function<bool(int64_t
   if (real_consumer_cnt > 0) { naive_produced_rs_.TryPopFrontRegst(regst->regst_desc_id()); }
 }
 
-// 向上游actor发送regst信息
+// 向上游Actor发送RegstMsg，从输入RegstSlot中移除对应的Regst
 void Actor::HandleConsumedNaiveDataRegstToProducer(std::function<bool(Regst*)> IsAllowedRegst) {
   tmp_regst_desc_id_vec_.clear();
   naive_consumed_rs_.ForEachFrontRegst([&](int64_t regst_desc_id, Regst* regst) {
@@ -651,6 +659,7 @@ void Actor::HandleConsumedNaiveDataRegstToProducer(std::function<bool(Regst*)> I
   naive_consumed_rs_.PopFrontRegsts(tmp_regst_desc_id_vec_);
 }
 
+// 向下游Actor发送相关regst_desc的EordMsg
 void Actor::AsyncSendEORDMsgForAllProducedRegstDesc() {
   for (auto& pair : produced_regsts_) {
     CHECK(!pair.second.empty());
@@ -682,15 +691,19 @@ Regst* Actor::GetSoleProducedRegst4RegstDescId(int64_t regst_desc_id) const {
   return it->second.front().get();
 }
 
+// 更新输出Regst的状态
 int Actor::TryUpdtStateAsProducedRegst(Regst* regst) {
   auto reading_cnt_it = produced_regst2reading_cnt_.find(regst);
   if (reading_cnt_it == produced_regst2reading_cnt_.end()) { return -1; }
   CHECK(produced_regsts_.find(regst->regst_desc_id()) != produced_regsts_.end());
+  // 输出Regst需要被消费的次数减1
   CHECK_GE(reading_cnt_it->second, 1);
   reading_cnt_it->second -= 1;
   total_reading_cnt_ -= 1;
+  // 如果输出Regst仍需被消费
   if (reading_cnt_it->second != 0) { return 0; }
 
+  // 如果输出Regst已被下游Actor消费完成，则可写
   if (inplace_produced_rs_.TryPushBackRegst(regst) == 0) {
     int64_t in_regst_desc_id = inplace_regst_desc_id_out2in_.at(regst->regst_desc_id());
     Regst* in_regst = inplace_consumed_rs_.Front(in_regst_desc_id);
@@ -703,8 +716,11 @@ int Actor::TryUpdtStateAsProducedRegst(Regst* regst) {
 
   int64_t& expected_act_id = produced_regst2expected_act_id_[regst->regst_desc_id()];
   if (expected_act_id >= 0 && CheckOutputActId(regst->regst_desc_id())) {
+    // 检查输出Regst的act_id与预期是否一致
     CHECK_EQ(regst->act_id(), expected_act_id);
   }
+  // 更新expected_act_id
+  // 与上面的检查语句一起，实质作用为，预言此Regst经过ActNumForEachOutput()次Act()后再次生产完成
   expected_act_id = regst->act_id() + ActNumForEachOutput(regst->regst_desc_id());
   return 0;
 }
