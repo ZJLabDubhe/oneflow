@@ -142,6 +142,24 @@ class TestAutograd(flow.unittest.TestCase):
             z.sum().backward()
         return (x.grad, y.grad)
 
+    @autotest(n=10, auto_backward=False, check_graph=False)
+    def test_autograd_functional_jacobian(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.sin
+        jac = torch.autograd.funtional.jacobian(func,x,create_graph=True)
+        return jac
+    
+    @autotest(n=10, auto_backward=False, check_graph=False)
+    def test_autograd_functional_hessian(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.sin
+        hessian = torch.autograd.funtional.hessian(func,x,create_graph=True)
+        return hessian
+    
 
 if __name__ == "__main__":
     unittest.main()
