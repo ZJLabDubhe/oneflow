@@ -78,12 +78,12 @@ def _grad_preprocess(inputs, create_graph, need_graph):
     for inp in inputs:
         if create_graph and inp.requires_grad:
             # Create at least a new Tensor object in a differentiable way
-            if not inp.is_sparse:
-                # Use .view_as() to get a shallow copy
-                res.append(inp.view_as(inp))
-            else:
-                # We cannot use view for sparse Tensors so we clone
-                res.append(inp.clone())
+            #if not inp.is_sparse:
+            # Use .view_as() to get a shallow copy
+            res.append(inp.view_as(inp))
+            #else:
+            # We cannot use view for sparse Tensors so we clone
+            #res.append(inp.clone())
         else:
             res.append(inp.detach().requires_grad_(need_graph))
     return tuple(res)
@@ -156,8 +156,7 @@ def _autograd_grad(outputs, inputs, grad_outputs=None, create_graph=False, retai
                                    create_graph=create_graph, retain_graph=retain_graph)
 
 
-def jacobian(func: Callable, inputs, create_graph: bool = False, 
-             strict: bool = False, vectorize:bool = False):
+def jacobian(func: Callable, inputs, create_graph: bool = False, strict: bool = False, vectorize:bool = False):
     r"""Function that computes the Jacobian of a given function.
 
     Args:
@@ -236,15 +235,15 @@ def jacobian(func: Callable, inputs, create_graph: bool = False,
                                             "jacobian")
     _check_requires_grad(outputs, "outputs", strict=strict)
 
-    jacobian: Tuple[flow.Tensor, ...] = tuple()
+    jacobian: Tuple[flow.Tensor, ...] = tuple()   #空tuple对象
 
     for i, out in enumerate(outputs):
         # mypy complains that expression and variable have different types due to the empty list
         jac_i: Tuple[List[flow.Tensor]] = tuple([] for _ in range(len(inputs)))  # type: ignore[assignment]
         for j in range(out.nelement()):
-            vj = _autograd_grad((out.reshape(-1)[j],), inputs,
+            vj = _autograd_grad((out.reshape(-1)[j],), inputs,    #对输出的每个元素求导，输出为tensor tuple
                                 retain_graph=True, create_graph=create_graph)
-            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(zip(jac_i, vj, inputs)):
+            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(zip(jac_i, vj, inputs)):  #将求导结果tensor拼接成一个list
                 if vj_el is not None:
                     if strict and create_graph and not vj_el.requires_grad:
                         msg = ("The jacobian of the user-provided function is "
@@ -260,12 +259,12 @@ def jacobian(func: Callable, inputs, create_graph: bool = False,
                         raise RuntimeError(msg)
                     jac_i_el.append(flow.zeros_like(inp_el))
 
-        jacobian += (tuple(flow.stack(jac_i_el, dim=0).view(out.size()
+        jacobian += (tuple(flow.stack(jac_i_el, dim=0).view(out.size()   #将输出导数tensors拼接成一个大tensor，右侧对应的是一个输出tensor的jacobian
                         + inputs[el_idx].size()) for (el_idx, jac_i_el) in enumerate(jac_i)), )
 
-    jacobian = _grad_postprocess(jacobian, create_graph)
+    jacobian = _grad_postprocess(jacobian, create_graph)  #后处理
 
-    return _tuple_postprocess(jacobian, (is_outputs_tuple, is_inputs_tuple))
+    return _tuple_postprocess(jacobian, (is_outputs_tuple, is_inputs_tuple))  #tuple转tensor
 
 def hessian(func: Callable, inputs, create_graph: bool = False, strict: bool = False, vectorize:bool = False):
     r"""Function that computes the Hessian of a given scalar function.
@@ -367,7 +366,7 @@ def hessian(func: Callable, inputs, create_graph: bool = False, strict: bool = F
     return _tuple_postprocess(res, (is_inputs_tuple, is_inputs_tuple))
 
 
-def jvp(func: Callable, primals: Any, tangents: Any, *, strict: bool = False, has_aux: bool = False):
+#def jvp(func: Callable, primals: Any, tangents: Any, *, strict: bool = False, has_aux: bool = False):
     """
     Standing for the Jacobian-vector product, returns a tuple containing
     the output of `func(*primals)` and the "Jacobian of ``func`` evaluated at
