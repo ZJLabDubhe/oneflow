@@ -85,12 +85,12 @@ def _grad_preprocess(inputs, create_graph, need_graph):
     for inp in inputs:
         if create_graph and inp.requires_grad:
             # Create at least a new Tensor object in a differentiable way
-            if not inp.is_sparse:
+            #if not inp.is_sparse:
                 # Use .view_as() to get a shallow copy
-                res.append(inp.view_as(inp))
-            else:
+                #res.append(inp.view_as(inp))
+            #else:
                 # We cannot use view for sparse Tensors so we clone 
-                res.append(inp.clone())
+            res.append(inp.clone())
         else:
             res.append(inp.detach().requires_grad_(need_graph))
     return tuple(res)

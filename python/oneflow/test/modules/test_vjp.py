@@ -16,83 +16,156 @@ limitations under the License.
 
 import unittest
 from collections import OrderedDict
-#from oneflow.test_utils.automated_test_util import *
+from oneflow.test_utils.automated_test_util import *
 import numpy as np
 import oneflow as flow
 from oneflow.test_utils.test_util import GenArgList
 
 
+
 def exp_reducer(x):
     return 3*x
 
-def adder(x, y):
-    return 2*x+3*y
-
-def exp_cos(x):
-    return flow.cos(x)
+# def exp_adder(x, y):
+#     return 2*x+3*y
 
 def exp_tensor_cos(x):
     return x.cos()
 
-def exp_sin(x):
-    return flow.sin(x)
-
 def exp_tensor_sin(x):
     return x.sin()
 
-def exp_nn_tanh(x):
-    m=flow.nn.Tanh()
-    return m(x)
-#pow
 
 
+def exp_mul_num(x):
+    return torch.mul(x,10)
 
-
-def _test_vjp(test_case, device, func, create_graph, strict):
-   
-    input = flow.tensor(
-        np.random.randn(2,3), dtype=flow.float32, device=flow.device(device)
-    )
-    v = flow.ones(2,3)
-    y=flow.autograd.vjp(func, input, v,create_graph=create_graph, strict=strict)
-    
-
-def _test_vjp_two_inputs(test_case, device, func, create_graph, strict):
-   
-    inputs = (flow.tensor(
-        np.random.randn(2,3), dtype=flow.float32, device=flow.device(device)
-    ),flow.tensor(
-        np.random.randn(2,3), dtype=flow.float32, device=flow.device(device)
-    ))
-    v = flow.ones(2,3)
-
-    y=flow.autograd.vjp(func, inputs, v,create_graph=create_graph, strict=strict)
+def exp_mul(x,y):
+    return torch.mul(x,y)
 
 
 @flow.unittest.skip_unless_1n1d()
 class TestVjp(flow.unittest.TestCase):
-    def test_vjp(test_case):
-        arg_dict = OrderedDict()
-        arg_dict["test_fun"] = [
-            _test_vjp,
-            '''_test_vjp_two_inputs,'''
+    @autotest(n=5, check_graph=False)
+    def test_vjp_exp_reducer_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 2).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func=exp_reducer
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
+    
+    
+    @autotest(n=5, check_graph=False)
+    def test_vjp_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func=torch.sin
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
 
-        ]
-        arg_dict["device"] = ["cpu"]
-        arg_dict["func"] = [
-            exp_reducer, 
-            exp_cos,
-            exp_tensor_cos, 
-            exp_sin, 
-            exp_tensor_sin,
-            exp_nn_tanh,
 
-        ]
-        arg_dict["create_graph "] = [False, True]
-        arg_dict["strict "] = [False]
+    @autotest(n=5, check_graph=False)
+    def test_vjp_tensor_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func=exp_tensor_sin
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
+    
 
-        for arg in GenArgList(arg_dict):
-            arg[0](test_case, *arg[1:])
+    @autotest(n=5, check_graph=False)
+    def test_vjp_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func=torch.cos
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y    
+
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_tensor_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func=exp_tensor_cos
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y  
+    
+    
+    '''
+    #issue:pytorch_tensor
+    @autotest(n=1, check_graph=False)
+    def test_vjp_tanh_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        def exp_nn_tanh(x):
+            m=torch.nn.Tanh()
+            m.train(random())
+            device = random_device()
+            m.to(device)
+            #x = random_tensor().to(device)
+            #print("x:",type(x))
+            return m(x)
+        func=exp_nn_tanh
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
+    '''
+    '''
+    @autotest(n=1, check_graph=False)
+    def test_vjp_mul_num_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to('cpu')
+        func=exp_mul_num
+        v=torch.ones_like(x)
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
+    
+    @autotest(n=1, check_graph=False)
+    def test_vjp_mul_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = (random_tensor(ndim=ndim, requires_grad=True).to(device),random_tensor(ndim=ndim, requires_grad=True).to('cpu'))
+        func=exp_mul
+        v=torch.ones_like(random_tensor(ndim=ndim, requires_grad=True).to(device))
+        create_graph=random().to(bool)
+        strict=random().to(bool)
+        y = torch.autograd.functional.vjp(func, x, v, create_graph=create_graph, strict=strict)
+        
+        return y
+    '''
 
 
 if __name__ == "__main__":
