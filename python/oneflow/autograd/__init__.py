@@ -23,7 +23,7 @@ from oneflow.autograd.autograd_mode import (
     is_grad_enabled,
     no_grad,
 )
-from oneflow.autograd.functional import vjp
+from oneflow.autograd.functional import vjp, vhp
 __all__ = [
     "backward",
     "grad",
@@ -34,4 +34,5 @@ __all__ = [
     "is_grad_enabled",
     "no_grad",
     "vjp",
+    "vhp",
 ]
