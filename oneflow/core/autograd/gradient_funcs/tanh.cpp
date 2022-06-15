@@ -40,9 +40,7 @@ class TanhGrad : public OpExprGradFunction<TanhCaptureState> {
                     TensorTuple* in_grads) const override {
     if (!ctx->x_requires_grad) { return Maybe<void>::Ok(); }
     const auto& y = ctx->SavedTensors().at(0);
-    const auto& a = functional::Mul(y, y);
-    const auto& aa = functional::ScalarSub(1, JUST(a));
-    in_grads->at(0) = JUST(functional::Mul(out_grads.at(0), JUST(aa)));
+    in_grads->at(0) = JUST(functional::Mul(out_grads.at(0), JUST(functional::ScalarSub(1, JUST(functional::Mul(y, y)), 1))));
     return Maybe<void>::Ok();
   }
 };
