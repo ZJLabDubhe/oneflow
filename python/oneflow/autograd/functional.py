@@ -15,9 +15,11 @@ limitations under the License.
 """
 import oneflow as flow
 from typing import Callable, Tuple, List
-#from flow._vmap_internals import _vmap
+
+# from flow._vmap_internals import _vmap
 
 # Utility functions
+
 
 def _as_tuple_nocheck(x):
     if isinstance(x, tuple):
@@ -25,14 +27,15 @@ def _as_tuple_nocheck(x):
     elif isinstance(x, list):
         return tuple(x)
     else:
-        return x,
+        return (x,)
+
 
 def _as_tuple(inp, arg_name, fn_name):
     # Ensures that inp is a tuple of Tensors
     # Returns whether or not the original inp was a tuple and the tupled version of the input
     if arg_name is None and fn_name is None:
         return _as_tuple_nocheck(inp)
-    
+
     is_inp_tuple = True
     if not isinstance(inp, tuple):
         inp = (inp,)
@@ -41,13 +44,22 @@ def _as_tuple(inp, arg_name, fn_name):
     for i, el in enumerate(inp):
         if not isinstance(el, flow.Tensor):
             if is_inp_tuple:
-                raise TypeError("The {} given to {} must be either a Tensor or a tuple of Tensors but the"
-                                " value at index {} has type {}.".format(arg_name, fn_name, i, type(el)))
+                raise TypeError(
+                    "The {} given to {} must be either a Tensor or a tuple of Tensors but the"
+                    " value at index {} has type {}.".format(
+                        arg_name, fn_name, i, type(el)
+                    )
+                )
             else:
-                raise TypeError("The {} given to {} must be either a Tensor or a tuple of Tensors but the"
-                                " given {} has type {}.".format(arg_name, fn_name, arg_name, type(el)))
+                raise TypeError(
+                    "The {} given to {} must be either a Tensor or a tuple of Tensors but the"
+                    " given {} has type {}.".format(
+                        arg_name, fn_name, arg_name, type(el)
+                    )
+                )
 
     return is_inp_tuple, inp
+
 
 def _tuple_postprocess(res, to_unpack):
     # Unpacks a potentially nested tuple of Tensors
@@ -66,6 +78,7 @@ def _tuple_postprocess(res, to_unpack):
             res = res[0]
     return res
 
+
 def _grad_preprocess(inputs, create_graph, need_graph):
     # Preprocess the inputs to make sure they require gradient
     # inputs is a tuple of Tensors to preprocess
@@ -78,15 +91,16 @@ def _grad_preprocess(inputs, create_graph, need_graph):
     for inp in inputs:
         if create_graph and inp.requires_grad:
             # Create at least a new Tensor object in a differentiable way
-            #if not inp.is_sparse:
+            # if not inp.is_sparse:
             # Use .view_as() to get a shallow copy
             res.append(inp.view_as(inp))
-            #else:
+            # else:
             # We cannot use view for sparse Tensors so we clone
-            #res.append(inp.clone())
+            # res.append(inp.clone())
         else:
             res.append(inp.detach().requires_grad_(need_graph))
     return tuple(res)
+
 
 def _grad_postprocess(inputs, create_graph):
     # Postprocess the generated Tensors to avoid returning Tensors with history when the user did not
@@ -99,8 +113,9 @@ def _grad_postprocess(inputs, create_graph):
     else:
         return tuple(_grad_postprocess(inp, create_graph) for inp in inputs)
 
+
 def _check_requires_grad(inputs, input_type, strict):
-    # Used to make all the necessary checks to raise nice errors in strict mode.  
+    # Used to make all the necessary checks to raise nice errors in strict mode.
     if not strict:
         return
 
@@ -109,29 +124,44 @@ def _check_requires_grad(inputs, input_type, strict):
     for i, inp in enumerate(inputs):
         if inp is None:
             # This can only be reached for grad_inputs.
-            raise RuntimeError("The output of the user-provided function is independent of input {}."
-                               " This is not allowed in strict mode.".format(i))
+            raise RuntimeError(
+                "The output of the user-provided function is independent of input {}."
+                " This is not allowed in strict mode.".format(i)
+            )
         if not inp.requires_grad:
             if input_type == "hessian":
-                raise RuntimeError("The hessian of the user-provided function with respect to input {}"
-                                   " is independent of the input. This is not allowed in strict mode."
-                                   " You should ensure that your function is thrice differentiable and that"
-                                   " the hessian depends on the inputs.".format(i))
+                raise RuntimeError(
+                    "The hessian of the user-provided function with respect to input {}"
+                    " is independent of the input. This is not allowed in strict mode."
+                    " You should ensure that your function is thrice differentiable and that"
+                    " the hessian depends on the inputs.".format(i)
+                )
             elif input_type == "jacobian":
-                raise RuntimeError("While computing the hessian, found that the jacobian of the user-provided"
-                                   " function with respect to input {} is independent of the input. This is not"
-                                   " allowed in strict mode. You should ensure that your function is twice"
-                                   " differentiable and that the jacobian depends on the inputs (this would be"
-                                   " violated by a linear function for example).".format(i))
+                raise RuntimeError(
+                    "While computing the hessian, found that the jacobian of the user-provided"
+                    " function with respect to input {} is independent of the input. This is not"
+                    " allowed in strict mode. You should ensure that your function is twice"
+                    " differentiable and that the jacobian depends on the inputs (this would be"
+                    " violated by a linear function for example).".format(i)
+                )
             elif input_type == "grad_inputs":
-                raise RuntimeError("The gradient with respect to input {} is independent of the inputs of the"
-                                   " user-provided function. This is not allowed in strict mode.".format(i))
+                raise RuntimeError(
+                    "The gradient with respect to input {} is independent of the inputs of the"
+                    " user-provided function. This is not allowed in strict mode.".format(
+                        i
+                    )
+                )
             else:
-                raise RuntimeError("Output {} of the user-provided function does not require gradients."
-                                   " The outputs must be computed in a differentiable manner from the input"
-                                   " when running in strict mode.".format(i))
+                raise RuntimeError(
+                    "Output {} of the user-provided function does not require gradients."
+                    " The outputs must be computed in a differentiable manner from the input"
+                    " when running in strict mode.".format(i)
+                )
 
-def _autograd_grad(outputs, inputs, grad_outputs=None, create_graph=False, retain_graph=None):
+
+def _autograd_grad(
+    outputs, inputs, grad_outputs=None, create_graph=False, retain_graph=None
+):
     # Version of autograd.grad that accepts `None` in outputs and do not compute gradients for them.
     # This has the extra constraint that inputs has to be a tuple
     assert isinstance(outputs, tuple)
@@ -142,21 +172,32 @@ def _autograd_grad(outputs, inputs, grad_outputs=None, create_graph=False, retai
 
     new_outputs: Tuple[flow.Tensor, ...] = tuple()
     new_grad_outputs: Tuple[flow.Tensor, ...] = tuple()
-    #print('231:\n',new_outputs,new_grad_outputs)
+    # print('231:\n',new_outputs,new_grad_outputs)
     for out, grad_out in zip(outputs, grad_outputs):
         if out is not None and out.requires_grad:
             new_outputs += (out,)
             new_grad_outputs += (grad_out,)
-    
+
     if len(new_outputs) == 0:
         # No differentiable output, we don't need to call the autograd engine
         return (None,) * len(inputs)
     else:
-        return flow.autograd.grad(new_outputs, inputs, grad_outputs=None,
-                                   create_graph=create_graph, retain_graph=retain_graph)
+        return flow.autograd.grad(
+            new_outputs,
+            inputs,
+            grad_outputs=None,
+            create_graph=create_graph,
+            retain_graph=retain_graph,
+        )
 
 
-def jacobian(func: Callable, inputs, create_graph: bool = False, strict: bool = False, vectorize:bool = False):
+def jacobian(
+    func: Callable,
+    inputs,
+    create_graph: bool = False,
+    strict: bool = False,
+    vectorize: bool = False,
+):
     r"""Function that computes the Jacobian of a given function.
 
     Args:
@@ -223,50 +264,74 @@ def jacobian(func: Callable, inputs, create_graph: bool = False, strict: bool = 
                  [0., 3.]]))
     """
 
-    
     is_inputs_tuple, inputs = _as_tuple(inputs, "inputs", "jacobian")
-    
+
     inputs = _grad_preprocess(inputs, create_graph=create_graph, need_graph=True)
 
-
     outputs = func(*inputs)
-    is_outputs_tuple, outputs = _as_tuple(outputs,
-                                            "outputs of the user-provided function",
-                                            "jacobian")
+    is_outputs_tuple, outputs = _as_tuple(
+        outputs, "outputs of the user-provided function", "jacobian"
+    )
     _check_requires_grad(outputs, "outputs", strict=strict)
 
-    jacobian: Tuple[flow.Tensor, ...] = tuple()   #空tuple对象
+    jacobian: Tuple[flow.Tensor, ...] = tuple()  # 空tuple对象
 
     for i, out in enumerate(outputs):
         # mypy complains that expression and variable have different types due to the empty list
         jac_i: Tuple[List[flow.Tensor]] = tuple([] for _ in range(len(inputs)))  # type: ignore[assignment]
         for j in range(out.nelement()):
-            vj = _autograd_grad((out.reshape(-1)[j],), inputs,    #对输出的每个元素求导，输出为tensor tuple
-                                retain_graph=True, create_graph=create_graph)
-            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(zip(jac_i, vj, inputs)):  #将求导结果tensor拼接成一个list
+            vj = _autograd_grad(
+                (out.reshape(-1)[j],),
+                inputs,  # 对输出的每个元素求导，输出为tensor tuple
+                retain_graph=True,
+                create_graph=create_graph,
+            )
+            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(
+                zip(jac_i, vj, inputs)
+            ):  # 将求导结果tensor拼接成一个list
                 if vj_el is not None:
                     if strict and create_graph and not vj_el.requires_grad:
-                        msg = ("The jacobian of the user-provided function is "
-                                "independent of input {}. This is not allowed in "
-                                "strict mode when create_graph=True.".format(i))
+                        msg = (
+                            "The jacobian of the user-provided function is "
+                            "independent of input {}. This is not allowed in "
+                            "strict mode when create_graph=True.".format(i)
+                        )
                         raise RuntimeError(msg)
                     jac_i_el.append(vj_el)
                 else:
                     if strict:
-                        msg = ("Output {} of the user-provided function is "
-                                "independent of input {}. This is not allowed in "
-                                "strict mode.".format(i, el_idx))
+                        msg = (
+                            "Output {} of the user-provided function is "
+                            "independent of input {}. This is not allowed in "
+                            "strict mode.".format(i, el_idx)
+                        )
                         raise RuntimeError(msg)
                     jac_i_el.append(flow.zeros_like(inp_el))
 
-        jacobian += (tuple(flow.stack(jac_i_el, dim=0).view(out.size()   #将输出导数tensors拼接成一个大tensor，右侧对应的是一个输出tensor的jacobian
-                        + inputs[el_idx].size()) for (el_idx, jac_i_el) in enumerate(jac_i)), )
+        jacobian += (
+            tuple(
+                flow.stack(jac_i_el, dim=0).view(
+                    out.size()  # 将输出导数tensors拼接成一个大tensor，右侧对应的是一个输出tensor的jacobian
+                    + inputs[el_idx].size()
+                )
+                for (el_idx, jac_i_el) in enumerate(jac_i)
+            ),
+        )
 
-    jacobian = _grad_postprocess(jacobian, create_graph)  #后处理
+    jacobian = _grad_postprocess(jacobian, create_graph)  # 后处理
 
-    return _tuple_postprocess(jacobian, (is_outputs_tuple, is_inputs_tuple))  #tuple转tensor
+    return _tuple_postprocess(
+        jacobian, (is_outputs_tuple, is_inputs_tuple)
+    )  # tuple转tensor
 
-def hessian(func: Callable, inputs, create_graph: bool = False, strict: bool = False, vectorize:bool = False):
+
+def hessian(
+    func: Callable,
+    inputs,
+    create_graph: bool = False,
+    strict: bool = False,
+    vectorize: bool = False,
+):
     r"""Function that computes the Hessian of a given scalar function.
 
     Args:
@@ -346,14 +411,20 @@ def hessian(func: Callable, inputs, create_graph: bool = False, strict: bool = F
 
     def ensure_single_output_function(*inp):
         out = func(*inp)
-        is_out_tuple, t_out = _as_tuple(out, "outputs of the user-provided function", "hessian")
+        is_out_tuple, t_out = _as_tuple(
+            out, "outputs of the user-provided function", "hessian"
+        )
         _check_requires_grad(t_out, "outputs", strict=strict)
 
         if is_out_tuple or not isinstance(out, flow.Tensor):
-            raise RuntimeError("The function given to hessian should return a single Tensor")
+            raise RuntimeError(
+                "The function given to hessian should return a single Tensor"
+            )
 
         if out.nelement() != 1:
-            raise RuntimeError("The Tensor returned by the function given to hessian should contain a single element")
+            raise RuntimeError(
+                "The Tensor returned by the function given to hessian should contain a single element"
+            )
 
         return out.squeeze()
 
@@ -362,9 +433,7 @@ def hessian(func: Callable, inputs, create_graph: bool = False, strict: bool = F
         _check_requires_grad(jac, "jacobian", strict=strict)
         return jac
 
-    res = jacobian(jac_func, inputs, create_graph=create_graph, strict=strict, vectorize=vectorize)
+    res = jacobian(
+        jac_func, inputs, create_graph=create_graph, strict=strict, vectorize=vectorize
+    )
     return _tuple_postprocess(res, (is_inputs_tuple, is_inputs_tuple))
-
-    
-    
-    
