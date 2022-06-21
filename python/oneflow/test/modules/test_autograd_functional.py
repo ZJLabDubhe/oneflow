@@ -21,9 +21,190 @@ import oneflow.unittest
 from oneflow.test_utils.automated_test_util import *
 
 
+def _exp_reducer(x):
+    return 3 * x * x
+
+
+def _exp_tensor_cos(x):
+    return x.cos()
+
+
+def _exp_tensor_sin(x):
+    return x.sin()
+
+
+def _exp_tensor_tanh(x):
+    return x.tanh()
+
+
 @flow.unittest.skip_unless_1n1d()
 class TestAutogradFunctiona(flow.unittest.TestCase):
-    @autotest(n=10, auto_backward=False, check_graph=False)
+    @autotest(n=5, check_graph=False)
+    def test_vjp_exp_reducer_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 2).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_reducer
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.sin
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_tensor_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_tensor_sin
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.cos
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_tensor_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_tensor_cos
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vjp_tanh_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_tensor_tanh
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vjp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vhp_exp_reducer_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 2).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_reducer
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vhp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vhp_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.sin
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vhp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vhp_tensor_sin_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_tensor_sin
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vhp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vhp_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = torch.cos
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vhp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, check_graph=False)
+    def test_vhp_tensor_cos_with_random_data(test_case):
+        device = random_device()
+        ndim = random(1, 4).to(int)
+        x = random_tensor(ndim=ndim, requires_grad=True).to(device)
+        func = _exp_tensor_cos
+        v = torch.ones_like(x)
+        create_graph = random().to(bool)
+        strict = random().to(bool)
+        y = torch.autograd.functional.vhp(
+            func, x, v, create_graph=create_graph, strict=strict
+        )
+
+        return y
+
+    @autotest(n=5, auto_backward=False, check_graph=False)
     def test_autograd_functional_jacobian(test_case):
         device = random_device()
         ndim = random(1, 4).to(int)
@@ -32,14 +213,14 @@ class TestAutogradFunctiona(flow.unittest.TestCase):
         jac = torch.autograd.functional.jacobian(func, x, create_graph=True)
         return jac
 
-    @autotest(n=10, auto_backward=False, check_graph=False)
+    @autotest(n=5, auto_backward=False, check_graph=False)
     def test_autograd_functional_hessian(test_case):
         device = random_device()
         ndim = random(1, 4).to(int)
         x = random_tensor(ndim=ndim, requires_grad=True).to(device)
         func = torch.sin
-        hessian = torch.autograd.functional.hessian(func, x, create_graph=True)
-        return hessian
+        hess = torch.autograd.functional.hessian(func, x, create_graph=True)
+        return hess
 
 
 if __name__ == "__main__":
