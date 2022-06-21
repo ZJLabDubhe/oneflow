@@ -559,7 +559,7 @@ def jacobian(
     )
     _check_requires_grad(outputs, "outputs", strict=strict)
 
-    jacobian: Tuple[oneflow.Tensor, ...] = tuple()  # 空tuple对象
+    jacobian: Tuple[oneflow.Tensor, ...] = tuple()
 
     for i, out in enumerate(outputs):
         # mypy complains that expression and variable have different types due to the empty list
@@ -567,13 +567,11 @@ def jacobian(
         for j in range(out.nelement()):
             vj = _autograd_grad(
                 (out.reshape(-1)[j],),
-                inputs,  # 对输出的每个元素求导，输出为tensor tuple
+                inputs,
                 retain_graph=True,
                 create_graph=create_graph,
             )
-            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(
-                zip(jac_i, vj, inputs)
-            ):  # 将求导结果tensor拼接成一个list
+            for el_idx, (jac_i_el, vj_el, inp_el) in enumerate(zip(jac_i, vj, inputs)):
                 if vj_el is not None:
                     if strict and create_graph and not vj_el.requires_grad:
                         msg = (
@@ -595,19 +593,14 @@ def jacobian(
 
         jacobian += (
             tuple(
-                oneflow.stack(jac_i_el, dim=0).view(
-                    out.size()  # 将输出导数tensors拼接成一个大tensor，右侧对应的是一个输出tensor的jacobian
-                    + inputs[el_idx].size()
-                )
+                oneflow.stack(jac_i_el, dim=0).view(out.size() + inputs[el_idx].size())
                 for (el_idx, jac_i_el) in enumerate(jac_i)
             ),
         )
 
-    jacobian = _grad_postprocess(jacobian, create_graph)  # 后处理
+    jacobian = _grad_postprocess(jacobian, create_graph)
 
-    return _tuple_postprocess(
-        jacobian, (is_outputs_tuple, is_inputs_tuple)
-    )  # tuple转tensor
+    return _tuple_postprocess(jacobian, (is_outputs_tuple, is_inputs_tuple))
 
 
 def hessian(
