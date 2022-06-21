@@ -23,7 +23,8 @@ from oneflow.autograd.autograd_mode import (
     is_grad_enabled,
     no_grad,
 )
-from oneflow.autograd.functional import vjp, vhp
+from oneflow.autograd.functional import vjp, vhp, jacobian, hessian
+
 __all__ = [
     "backward",
     "grad",
@@ -35,4 +36,6 @@ __all__ = [
     "no_grad",
     "vjp",
     "vhp",
+    "jacobian",
+    "hessian",
 ]
