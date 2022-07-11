@@ -330,6 +330,9 @@ class Lbfgs(Optimizer):
 
         self._state = defaultdict(dict)
         self.parameters = params
+        # 这边较pytorch做了一点修改，我看pytorch原处这里是先把input的params存进param_group，再给赋值进self._params
+        # 这边因为param_groups和oneflow有些区别，所以直接赋值进去了
+        
         self._numel_cache = None
 
     def _numel(self):
@@ -420,7 +423,11 @@ class Lbfgs(Optimizer):
             # 这部分目前在一一打印来试图debug
             print(self._state)
             state = self._state[self.parameters[0]]
+            # 主要报错点，TypeError: 'generator' object is not subscriptable
+            
             # print(self.parameters[0])
+            # 报错点2，添加了print，则_gather_flat_grad里的view_as会报错，不添加则能顺利运行
+            
             state.setdefault('func_evals', 0)
             state.setdefault('n_iter', 0)
 
@@ -531,6 +538,9 @@ class Lbfgs(Optimizer):
                 # directional derivative is below tolerance
                 if gtd > -tolerance_change:
                     break
+
+                print('yes')
+                # demo1 运行到此处
 
                 # optional line search: user function
                 ls_func_evals = 0
