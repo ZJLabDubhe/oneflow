@@ -37,12 +37,16 @@ import functools
 运行必要环境：oneflow，torch
 """
 
+
 class _RequiredParameter(object):
     """Singleton class representing a required parameter for an Optimizer."""
+
     def __repr__(self):
         return "<required parameter>"
 
+
 required = _RequiredParameter()
+
 
 def _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=None):
     # 三次线性插值法 用于寻找合适的步长 此处仅用于两点之间
@@ -66,7 +70,7 @@ def _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=None):
     #   min_pos = x2 - (x2 - x1)*((g2 + d2 - d1)/(g2 - g1 + 2*d2));
     #   t_new = min(max(min_pos,xmin_bound),xmax_bound);
     d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
-    d2_square = d1**2 - g1 * g2
+    d2_square = d1 ** 2 - g1 * g2
     if d2_square >= 0:
         d2 = d2_square.sqrt()
         if x1 <= x2:
@@ -324,18 +328,8 @@ class Lbfgs(Optimizer):
             raise ValueError("LBFGS doesn't support per-parameter options "
                              "(parameter groups)")
 
-        # self.defaults = options
-        # param_groups = list(params)
-        # if len(param_groups) == 0:
-        #     raise ValueError("optimizer got an empty parameter list")
-        # if not isinstance(param_groups[0], dict):
-        #     param_groups = [{'params': param_groups}]
-        # for param_group in param_groups:
-        #     self.add_param_group(param_group)
-        # self._params = self.param_groups[0]['params']
-
         self._state = defaultdict(dict)
-        self._params = params
+        self.parameters = params
         self._numel_cache = None
 
     def _numel(self):
@@ -344,16 +338,16 @@ class Lbfgs(Optimizer):
 
         # 用来返回函数内张量总数
         if self._numel_cache is None:
-            self._numel_cache = reduce(lambda total, p: total + p.numel(), self._params, 0)
+            self._numel_cache = reduce(lambda total, p: total + p.numel(), self.parameters, 0)
         return self._numel_cache
 
     def _gather_flat_grad(self):
         # 求函数梯度（？）书上公式是这样
         # 应该没错，假如函数没梯度则返回等数量的0填充tensor
         views = []
-        for p in self._params:
+        for p in self.parameters:
             if p.grad is None:
-                view = p.copy()
+                view = flow.Tensor(p.numel())
             # 下面有个if else给我去掉了，这个to_dense主要是考虑稀疏矩阵的
             # oneflow里好像没有对应操作就直接去掉了
             # elif p.grad.is_sparse:
@@ -366,7 +360,7 @@ class Lbfgs(Optimizer):
     def _add_grad(self, step_size, update):
         # 梯度累加，没看具体逻辑
         offset = 0
-        for p in self._params:
+        for p in self.parameters:
             numel = p.numel()
             # view as to avoid deprecated pointwise semantics
             p.add_(update[offset:offset + numel].view_as(p), alpha=step_size)
@@ -377,10 +371,10 @@ class Lbfgs(Optimizer):
         # torch里的clone和copy有本质区别，具体可以看
         # https://blog.csdn.net/qq_40438388/article/details/106860180
         # 这边每一个clone都做了contiguous操作，不知道目的
-        return [p.clone().contiguous() for p in self._params]
+        return [p.clone().contiguous() for p in self.parameters]
 
     def _set_param(self, params_data):
-        for p, pdata in zip(self._params, params_data):
+        for p, pdata in zip(self.parameters, params_data):
             p.copy_(pdata)
 
     def _directional_evaluate(self, closure, x, t, d):
@@ -425,7 +419,8 @@ class Lbfgs(Optimizer):
             # oneflow里面大概是没有的，目前对于optimizer里的代码研究还没有那么深入，有点菜鸡
             # 这部分目前在一一打印来试图debug
             print(self._state)
-            state = self._state[self._params[0]]
+            state = self._state[self.parameters[0]]
+            # print(self.parameters[0])
             state.setdefault('func_evals', 0)
             state.setdefault('n_iter', 0)
 
@@ -442,6 +437,7 @@ class Lbfgs(Optimizer):
             if opt_cond:
                 return orig_loss
 
+            # print('yes')
             # 同 state更新问题
             # 不过暂时代码还没有运行到这边
             d = state.get('d')
@@ -459,7 +455,6 @@ class Lbfgs(Optimizer):
                 # keep track of nb of iterations
                 n_iter += 1
                 state['n_iter'] += 1
-
                 ############################################################
                 # compute gradient descent direction
                 ############################################################
@@ -530,8 +525,9 @@ class Lbfgs(Optimizer):
                     t = lr
 
                 # directional derivative
-                gtd = flat_grad.dot(d)  # g * d
+                gtd = flow.dot(flat_grad, d)  # g * d
 
+                print('yes')
                 # directional derivative is below tolerance
                 if gtd > -tolerance_change:
                     break
@@ -638,59 +634,59 @@ class Lbfgs(Optimizer):
             new_opt_confs.append(optimizer_conf)
         return new_opt_confs
 
-    def add_param_group(self, param_group):
-        r"""Add a param group to the :class:`Optimizer` s `param_groups`.
-        This can be useful when fine tuning a pre-trained network as frozen layers can be made
-        trainable and added to the :class:`Optimizer` as training progresses.
-        Args:
-            param_group (dict): Specifies what Tensors should be optimized along with group
-            specific optimization options.
-        """
+    # def add_param_group(self, param_group):
+    #     r"""Add a param group to the :class:`Optimizer` s `param_groups`.
+    #     This can be useful when fine tuning a pre-trained network as frozen layers can be made
+    #     trainable and added to the :class:`Optimizer` as training progresses.
+    #     Args:
+    #         param_group (dict): Specifies what Tensors should be optimized along with group
+    #         specific optimization options.
+    #     """
+    #
+    #     # 这是torch里面一个更新param的方法
+    #     # oneflow这块好像搞的不是太行，所以直接引用过来了
+    #     assert isinstance(param_group, dict), "param group must be a dict"
+    #
+    #     params = param_group['params']
+    #     if isinstance(params, flow.Tensor):
+    #         param_group['params'] = [params]
+    #     elif isinstance(params, set):
+    #         raise TypeError('optimizer parameters need to be organized in ordered collections, but '
+    #                         'the ordering of tensors in sets will change between runs. Please use a list instead.')
+    #     else:
+    #         param_group['params'] = list(params)
+    #
+    #     for param in param_group['params']:
+    #         if not isinstance(param, flow.Tensor):
+    #             raise TypeError("optimizer can only optimize Tensors, "
+    #                             "but one of the params is " + param.type())
+    #         if not param.is_leaf:
+    #             raise ValueError("can't optimize a non-leaf Tensor")
+    #
+    #     for name, default in self.defaults.items():
+    #         if default is required and name not in param_group:
+    #             raise ValueError("parameter group didn't specify a value of required optimization parameter " +
+    #                              name)
+    #         else:
+    #             param_group.setdefault(name, default)
+    #
+    #     params = param_group['params']
+    #     if len(params) != len(set(params)):
+    #         print("optimizer contains a parameter group with duplicate parameters; "
+    #                       "in future, this will cause an error; "
+    #                       "see github.com/pytorch/pytorch/issues/40967 for more information")
+    #
+    #     param_set = set()
+    #     for group in self.param_groups:
+    #         param_set.update(set(group['params']))
+    #
+    #     if not param_set.isdisjoint(set(param_group['params'])):
+    #         raise ValueError("some parameters appear in more than one parameter group")
+    #
+    #     self.param_groups.append(param_group)
 
-        # 这是torch里面一个更新param的方法
-        # oneflow这块好像搞的不是太行，所以直接引用过来了
-        assert isinstance(param_group, dict), "param group must be a dict"
-
-        params = param_group['params']
-        if isinstance(params, flow.Tensor):
-            param_group['params'] = [params]
-        elif isinstance(params, set):
-            raise TypeError('optimizer parameters need to be organized in ordered collections, but '
-                            'the ordering of tensors in sets will change between runs. Please use a list instead.')
-        else:
-            param_group['params'] = list(params)
-
-        for param in param_group['params']:
-            if not isinstance(param, flow.Tensor):
-                raise TypeError("optimizer can only optimize Tensors, "
-                                "but one of the params is " + param.type())
-            if not param.is_leaf:
-                raise ValueError("can't optimize a non-leaf Tensor")
-
-        for name, default in self.defaults.items():
-            if default is required and name not in param_group:
-                raise ValueError("parameter group didn't specify a value of required optimization parameter " +
-                                 name)
-            else:
-                param_group.setdefault(name, default)
-
-        params = param_group['params']
-        if len(params) != len(set(params)):
-            print("optimizer contains a parameter group with duplicate parameters; "
-                          "in future, this will cause an error; "
-                          "see github.com/pytorch/pytorch/issues/40967 for more information")
-
-        param_set = set()
-        for group in self.param_groups:
-            param_set.update(set(group['params']))
-
-        if not param_set.isdisjoint(set(param_group['params'])):
-            raise ValueError("some parameters appear in more than one parameter group")
-
-        self.param_groups.append(param_group)
 
 def b():
-
     params = [flow.randn(10, 5), flow.randn(10)]
     opt1 = Lbfgs(params, 0.01, tolerance_grad=inf)
     opt2 = Lbfgs(params, 0.01, tolerance_grad=-inf)
@@ -702,5 +698,6 @@ def b():
     res2 = opt2.step(closure)
     print(res1)
     print(res2)
+
 
 b()
