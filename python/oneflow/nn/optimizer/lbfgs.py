@@ -138,7 +138,6 @@ def _strong_wolfe(obj_func,
         if flow.is_tensor(bracket[0]):
             bracket[0] = bracket[0].item()
         if abs(bracket[1] - bracket[0]) * d_norm < tolerance_change:
-            print('stop')
             break
 
         # compute new trial value
