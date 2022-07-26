@@ -292,6 +292,47 @@ class Softplus : public OpExprGradFunction<SoftplusCaptureState> {
   AttrMap base_attrs_;
 };
 
+struct SoftplusGradCaptureState : public AutoGradCaptureState {
+  bool requires_grad = true;
+  double beta = 1.0;
+  double threshold = 20.0;
+};
+
+class SoftplusGrad : public OpExprGradFunction<SoftplusGradCaptureState> {
+ public:
+  Maybe<void> Init(const OpExpr& op) override {
+    const auto* fw_op_expr = dynamic_cast<const UserOpExpr*>(&op);
+    CHECK_NOTNULL_OR_RETURN(fw_op_expr);
+    base_attrs_ = MakeAttrMapFromUserOpConf(fw_op_expr->proto());
+    return Maybe<void>::Ok();
+  }
+
+  Maybe<void> Capture(SoftplusGradCaptureState* ctx, const TensorTuple& inputs,
+                      const TensorTuple& outputs, const AttrMap& attrs) const override {
+    ComposedAttrMap composed_attrs(attrs, base_attrs_);
+    ctx->beta = JUST(composed_attrs.GetAttr<double>("beta"));
+    ctx->threshold = JUST(composed_attrs.GetAttr<double>("threshold"));
+    ctx->SaveTensorForBackward(JUST(oneflow::VectorAt(inputs, 0)));
+    return Maybe<void>::Ok();
+  }
+
+  Maybe<void> Apply(const SoftplusGradCaptureState* ctx, const TensorTuple& out_grads,
+                    TensorTuple* in_grads) const override {
+    CHECK_EQ_OR_RETURN(out_grads.size(), 1);
+    in_grads->resize(2);
+    if (ctx->requires_grad) {
+      const auto& x = JUST(oneflow::VectorAt(ctx->SavedTensors(), 0));
+      JUST(oneflow::VectorAt(*in_grads, 0)) = JUST(functional::SoftplusGradGrad(
+          x, JUST(oneflow::VectorAt(out_grads, 0)), ctx->beta, ctx->threshold));
+    }
+    return Maybe<void>::Ok();
+  }
+
+ private:
+  AttrMap base_attrs_;
+};
+
+
 struct HardTanhCaptureState : public AutoGradCaptureState {
   bool requires_grad;
   double min_val;
@@ -557,6 +598,7 @@ REGISTER_OP_EXPR_GRAD_FUNCTION("celu", Celu);
 REGISTER_OP_EXPR_GRAD_FUNCTION("prelu", PReLU);
 REGISTER_OP_EXPR_GRAD_FUNCTION("threshold", Threshold);
 REGISTER_OP_EXPR_GRAD_FUNCTION("softplus", Softplus);
+REGISTER_OP_EXPR_GRAD_FUNCTION("softplus_grad", SoftplusGrad);
 REGISTER_OP_EXPR_GRAD_FUNCTION("softshrink", SoftShrink);
 
 }  // namespace one
