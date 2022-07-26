@@ -20,38 +20,10 @@ import numpy as np
 import oneflow as flow
 from oneflow.nn.optimizer.optimizer import Optimizer, ParamGroup
 from oneflow.nn.parameter import Parameter
-from torch._six import inf
 import functools
-
-"""
-由于目前只是实现demo的状态，所以本文件不需要编译可以直接运行
-理论上其实并不需要放在该文件夹下，因为是用绝对路径引用
-然后目前的test代码也放在本文件末尾了，这是torch官方给的两个test中的一个
-该test极为简单，没有进入lbfgs算法核心部分
-手上有个小bug在调，等调完这个bug会引入另一段test代码
-暂时没有按代码规范来写，里面很多注解也是中文，为了方便理解
-后期等正式上线版本会进行代码规范调整
-运行必要环境：oneflow，torch
-"""
-
-
-class _RequiredParameter(object):
-    """Singleton class representing a required parameter for an Optimizer."""
-
-    def __repr__(self):
-        return "<required parameter>"
-
-
-required = _RequiredParameter()
 
 
 def _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=None):
-    # 三次线性插值法 用于寻找合适的步长 此处仅用于两点之间
-    # 数值优化第76页
-    # 大概作用是：优化算法主要是找方向和步长，线搜索主要用来寻找合适的
-    # 步长，因为他可以利用之前的一些信息，
-    # 原理大概类似于先给个左右范围，限定条件是wolfe，然后逐步缩小
-    # 该算法已封装好没必要动
     # ported from https://github.com/torch/optim/blob/master/polyinterp.lua
     # Compute bounds of interpolation area
     if bounds is not None:
@@ -91,15 +63,12 @@ def _strong_wolfe(obj_func,
                   tolerance_change=1e-9,
                   max_ls=25):
     # ported from https://github.com/torch/optim/blob/master/lswolfe.lua
-    # x(k+1) = x(k) + a(k) * p(k)
-    # 优化算法核心公式如上所示，此处a是步长，p是方向
-    # strong wolfe condition 总之就是加上了一堆限制条件很找步长
     d_norm = flow.max(flow.abs(d))
     g = g.clone().contiguous()
     # evaluate objective and gradient using initial step
     f_new, g_new = obj_func(x, t, d)
     ls_func_evals = 1
-    gtd_new = flow.dot(g_new,d)
+    gtd_new = flow.dot(g_new, d)
 
     # bracket an interval containing a point satisfying the Wolfe criteria
     t_prev, f_prev, g_prev, gtd_prev = 0, f, g, gtd
@@ -148,7 +117,7 @@ def _strong_wolfe(obj_func,
         gtd_prev = gtd_new
         f_new, g_new = obj_func(x, t, d)
         ls_func_evals += 1
-        gtd_new = flow.dot(g_new,d)
+        gtd_new = flow.dot(g_new, d)
         ls_iter += 1
 
     # reached max number of iterations?
@@ -164,8 +133,12 @@ def _strong_wolfe(obj_func,
     # find high and low points in bracket
     low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[-1] else (1, 0)
     while not done and ls_iter < max_ls:
-        # line-search bracket is so small
+        if flow.is_tensor(bracket[1]):
+            bracket[1] = bracket[1].item()
+        if flow.is_tensor(bracket[0]):
+            bracket[0] = bracket[0].item()
         if abs(bracket[1] - bracket[0]) * d_norm < tolerance_change:
+            print('stop')
             break
 
         # compute new trial value
@@ -208,7 +181,7 @@ def _strong_wolfe(obj_func,
             bracket_gtd[high_pos] = gtd_new
             low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[1] else (1, 0)
         else:
-            if abs(gtd_new) <= -c2 * gtd:
+            if flow.abs(gtd_new) <= -c2 * gtd:
                 # Wolfe conditions satisfied
                 done = True
             elif gtd_new * (bracket[high_pos] - bracket[low_pos]) >= 0:
@@ -231,60 +204,36 @@ def _strong_wolfe(obj_func,
     return f_new, g_new, t, ls_func_evals
 
 
-class Lbfgs(Optimizer):
-    r"""Implements Adagrad Optimizer.
-        The formula is:
-        .. math::
-            & S_{t} = S_{t-1} + grad \odot grad
-            & decay\_lr = \frac{learning\_rate}{(1 + (train\_step - 1) * lr\_decay)}
-            & X_{t} = X_{t-1} - \frac{decay\_lr}{\sqrt{S_{t} + \epsilon}} \odot grad
+class LBFGS(Optimizer):
+    r"""Implements Lbfgs Optimizer.
         Args:
             params (Union[Iterator[Parameter], List[Dict]]): iterable of parameters to optimize or dicts defining
             parameter groups
-            lr (float, optional): The learning rate. Defaults to 0.001.
-            lr_decay (float, optional): The decay factor of learning rate. Defaults to 0.0.
-            weight_decay (float, optional): The weight decay. Defaults to 0.
-            initial_accumulator_value (float, optional): The initial value of S. Defaults to 0.0.
-            eps (float, optional): A small constant terms added to the denominator to improve numerical stability. Defaults to 1e-10.
+            lr (float, optional): The learning rate. Defaults to 1.
+            max_iter (int, optional): maximal number of iterations per optimization step. Defaults to 20.
+            max_eval (int, optional): maximal number of function evaluations per optimization step. Defaults to max_iter * 1.25.
+            tolerance_grad (float, optional): termination tolerance on first order optimality. Defaults to 1e-5.
+            tolerance_change (float, optional): termination tolerance on function value/parameter changes. Defaults to 1e-9.
+            history_size (int, optional): update history size. Defaults to 100.
+            line_search_fn (str, optional): either 'strong_wolfe' or None. Defaults to None.
         For example:
         Example 1:
         .. code-block:: python
             # Assume net is a custom model.
-            lbfgs = flow.optim.Lbfgs(net.parameters(), lr=1e-3)
+            lbfgs = flow.optim.LBFGS(net.parameters())
+            def closure():
+                lbfgs.zero_grad()
+                loss.backward()
             for epoch in range(epochs):
                 # Read data, Compute the loss and so on.
                 # ...
-                loss.backward()
-                lbfgs.step()
-                lbfgs.zero_grad()
-        Example 2:
-        .. code-block:: python
-            # Assume net is a custom model.
-            lbfgs = flow.optim.Lbfgs(
-                [
-                    {
-                        "params": net.parameters(),
-                        "lr": learning_rate,
-                        "clip_grad_max_norm": 0.5,
-                        "clip_grad_norm_type": 2.0,
-                    }
-                ],
-            )
-            for epoch in range(epochs):
-                # Read data, Compute the loss and so on.
-                # ...
-                loss.backward()
-                lbfgs.clip_grad()
-                lbfgs.step()
-                lbfgs.zero_grad()
-        If you want to use clip_grad, you can refer this example.
-        For more details of `clip_grad_max_norm` and `clip_grad_norm_type`, you can refer to :func:`oneflow.nn.utils.clip_grad_norm_`.
+                lbfgs.step(closure)
         """
 
     def __init__(
             self,
             params: Union[Iterator[Parameter], List[Dict]],
-            lr: float = 0.001,
+            lr: float = 1,
             max_iter=20,
             max_eval=None,
             tolerance_grad=1e-7,
@@ -309,74 +258,24 @@ class Lbfgs(Optimizer):
                              "(parameter groups)")
 
         self._state = defaultdict(dict)
-        #
-        # print('params')
-        # print(params)
-        #
-        # print('listpa')
-        # print(list(params))
-        #
-        # print('paramgroups')
 
-        # param_groups = list(params)
-
-        # for param_group in self.param_groups:
-        #     for param in param_group.parameters:
-        #         print(param)
-
-        # for param_group in self.param_groups:
-        #     for param in param_group.parameters:
-        #         assert param.is_leaf, "parameters must be leaf tensor"
-        #         self._state[param] = dict()
-        #
-        # for param_group in self.param_groups:
-        #     lr = param_group["lr"]
-        #     print(lr)
-        #     l2 = param_group["weight_decay"]
-        #     print(l2)
-
-        # if len(param_groups) == 0:
-        #     raise ValueError("optimizer got an empty parameter list")
-        # if not isinstance(param_groups[0], dict):
-        #     param_groups = [{'params': param_groups}]
-        #
-        # for param_group in param_groups:
-        #     self.add_param_group(param_group)
-        #
-        # print(self.param_groups)
-        #
-        group = self.param_groups[0]  # 这里依然是object
-
+        group = self.param_groups[0]
         self.parameters = group._parameters
-        # print(self.parameters)
-        # print('point')
-        # print(params[0]['params'])
-        # 这边较pytorch做了一点修改，我看pytorch原处这里是先把input的params存进param_group，再给赋值进self._params
-        # 这边因为param_groups和oneflow有些区别，所以直接赋值进去了
 
         self._numel_cache = None
 
     def _numel(self):
-        # numel 用于返回张量数量
-        # reduce 用于列表内元素求和
-
-        # 用来返回函数内张量总数
         if self._numel_cache is None:
             self._numel_cache = reduce(lambda total, p: total + p.numel(), self.parameters, 0)
         return self._numel_cache
 
     def _gather_flat_grad(self):
-        # 求函数梯度（？）书上公式是这样
-        # 应该没错，假如函数没梯度则返回等数量的0填充tensor
         views = []
         for p in self.parameters:
             if p.grad is None:
-
-                # 这边zeros初始化的不合理，有点问题
-
                 view = flow.tensor(np.zeros(p.numel()))
-            # 下面有个if else给我去掉了，这个to_dense主要是考虑稀疏矩阵的
-            # oneflow里好像没有对应操作就直接去掉了
+            # deal with sparse matrix
+            # oneflow seems don't have similar api to fix the problem
             # elif p.grad.is_sparse:
             #     view = p.grad.to_dense().view(-1)
             else:
@@ -385,20 +284,15 @@ class Lbfgs(Optimizer):
         return flow.cat(views, 0)
 
     def _add_grad(self, step_size, update):
-        # 梯度累加，没看具体逻辑
         offset = 0
         for p in self.parameters:
             numel = p.numel()
             # view as to avoid deprecated pointwise semantics
-            # p.add_(update[offset:offset + numel].view(p.size()), alpha = step_size)
             p.add_((update[offset:offset + numel].view(p.size())) * step_size)
             offset += numel
         assert offset == self._numel()
 
     def _clone_param(self):
-        # torch里的clone和copy有本质区别，具体可以看
-        # https://blog.csdn.net/qq_40438388/article/details/106860180
-        # 这边每一个clone都做了contiguous操作，不知道目的
         return [p.clone().contiguous() for p in self.parameters]
 
     def _set_param(self, params_data):
@@ -406,9 +300,6 @@ class Lbfgs(Optimizer):
             p.copy_(pdata)
 
     def _directional_evaluate(self, closure, x, t, d):
-        # LBFGS一个很关键的部分
-        # 这是optimizer里面唯一一个用了闭包的，且必须用闭包的
-        # 这部分好像是测试一下梯度下降的结果是否符合标准？看方法名差不多
         self._add_grad(t, d)
         loss = closure().float()
         flat_grad = self._gather_flat_grad()
@@ -424,12 +315,10 @@ class Lbfgs(Optimizer):
         assert len(self.param_groups) == 1
         with flow.no_grad():
 
-            # 其实一直没搞懂 loss = closure()这部分的代码逻辑
-            # loss到底从哪计算的
-            # never mind，这部分torch和oneflow应该对齐的所以没必要太执着
-            closure = flow.grad_enable()(closure)
+            # Make sure the closure is always called with grad enabled
+            closure = flow.enable_grad()(closure)
 
-            group = self.param_groups[0]  # 这里依然是object
+            group = self.param_groups[0]
             lr = group['lr']
             max_iter = group['max_iter']
             max_eval = group['max_eval']
@@ -440,27 +329,12 @@ class Lbfgs(Optimizer):
 
             # NOTE: LBFGS has only global state, but we register it as state for
             # the first param, because this helps with casting in load_state_dict
-            # 这部分state更新很头疼，非常头疼
-            # 主要问题在于说torch.optimizer自带state更新机制
-            # oneflow里面大概是没有的，目前对于optimizer里的代码研究还没有那么深入，有点菜鸡
-            # 这部分目前在一一打印来试图debug
-            # print('selfstate')
-            # print(self._state)
-            # print('params0')
-            # print(self.parameters[0])
-            # print('selfstateparams')
-            # print(self._state[self.parameters[0]])
             state = self._state[self.parameters[0]]
-            # 主要报错点，TypeError: 'generator' object is not subscriptable
-            # 报错点2，添加了print，则_gather_flat_grad里的view_as会报错，不添加则能顺利运行
-
             state.setdefault('func_evals', 0)
             state.setdefault('n_iter', 0)
 
             # evaluate initial f(x) and df/dx
             orig_loss = closure()
-            # print('orig_loss')
-            # print(orig_loss)
             loss = orig_loss.float()
             current_evals = 1
             state['func_evals'] += 1
@@ -469,11 +343,10 @@ class Lbfgs(Optimizer):
             opt_cond = flow.max(flow.abs(flat_grad)) <= tolerance_grad
 
             # optimal condition
-            # if opt_cond:
-            #     return orig_loss
+            if opt_cond:
+                return orig_loss
 
-            # 同 state更新问题
-            # 不过暂时代码还没有运行到这边
+            # tensors cached in state (for tracing)
             d = state.get('d')
             t = state.get('t')
             old_dirs = state.get('old_dirs')
@@ -489,6 +362,7 @@ class Lbfgs(Optimizer):
                 # keep track of nb of iterations
                 n_iter += 1
                 state['n_iter'] += 1
+
                 ############################################################
                 # compute gradient descent direction
                 ############################################################
@@ -502,7 +376,7 @@ class Lbfgs(Optimizer):
                     # do lbfgs update (update memory)
                     y = flat_grad.sub(prev_flat_grad)
                     s = d.mul(t)
-                    ys = flow.dot(y,s)  # y*s
+                    ys = flow.dot(y, s)  # y*s
                     if ys > 1e-10:
                         # updating memory
                         if len(old_dirs) == history_size:
@@ -517,7 +391,7 @@ class Lbfgs(Optimizer):
                         ro.append(1. / ys)
 
                         # update scale of initial Hessian approximation
-                        H_diag = ys / (flow.dot(y,y))  # (y*y)
+                        H_diag = ys / (flow.dot(y, y))  # (y*y)
 
                     # compute the approximate (L-BFGS) inverse Hessian
                     # multiplied by the gradient
@@ -529,11 +403,9 @@ class Lbfgs(Optimizer):
 
                     # iteration in L-BFGS loop collapsed to use just one buffer
                     # two loop recursion
-                    # 数值优化第196页，主要是因为Hk难求，所以用其他的方式间接求Hk
-                    # 主要方法是用two loop recursion
                     q = flat_grad.neg()
                     for i in range(num_old - 1, -1, -1):
-                        al[i] = flow.dot(old_stps[i],q) * ro[i]
+                        al[i] = flow.dot(old_stps[i], q) * ro[i]
                         q = q + old_dirs[i] * (-al[i])
 
                     # multiply by initial Hessian
@@ -542,6 +414,7 @@ class Lbfgs(Optimizer):
                     for i in range(num_old):
                         be_i = flow.dot(old_dirs[i], r) * ro[i]
                         r = r + old_stps[i] * (al[i] - be_i)
+                        d = r
 
                 if prev_flat_grad is None:
                     prev_flat_grad = flat_grad.clone().contiguous()
@@ -564,7 +437,6 @@ class Lbfgs(Optimizer):
                 # directional derivative is below tolerance
                 if gtd > -tolerance_change:
                     break
-                # demo1 运行到此处
 
                 # optional line search: user function
                 ls_func_evals = 0
@@ -613,7 +485,7 @@ class Lbfgs(Optimizer):
                     break
 
                 # lack of progress
-                if flow.max(flow.abs(flow.mul(d,t))) <= tolerance_change:
+                if flow.max(flow.abs(flow.mul(d, t))) <= tolerance_change:
                     break
 
                 if flow.abs(loss - prev_loss) < tolerance_change:
@@ -628,14 +500,11 @@ class Lbfgs(Optimizer):
             state['prev_flat_grad'] = prev_flat_grad
             state['prev_loss'] = prev_loss
 
-            # self._state["step"] = self._state["step"] + 1
-
             return orig_loss
 
     def _generate_conf_for_graph(self, train_conf, vars_conf):
-        # 这部分是oneflow不同于torch的一块
-        # 姑且先从oneflow中的adagrad引进了这块
-        # 代码暂时没有运行到这边
+        # This part temporarily has none test cases.
+        # Maybe it can not work. Fix bugs later.
 
         new_opt_confs = []
         for param_group in self.param_groups:
@@ -667,70 +536,3 @@ class Lbfgs(Optimizer):
 
             new_opt_confs.append(optimizer_conf)
         return new_opt_confs
-
-    # def add_param_group(self, param_group):
-    #     r"""Add a param group to the :class:`Optimizer` s `param_groups`.
-    #     This can be useful when fine tuning a pre-trained network as frozen layers can be made
-    #     trainable and added to the :class:`Optimizer` as training progresses.
-    #     Args:
-    #         param_group (dict): Specifies what Tensors should be optimized along with group
-    #         specific optimization options.
-    #     """
-    #
-    #     # 这是torch里面一个更新param的方法
-    #     # oneflow这块好像搞的不是太行，所以直接引用过来了
-    #     assert isinstance(param_group, dict), "param group must be a dict"
-    #
-    #     params = param_group['params']
-    #     if isinstance(params, flow.Tensor):
-    #         param_group['params'] = [params]
-    #     elif isinstance(params, set):
-    #         raise TypeError('optimizer parameters need to be organized in ordered collections, but '
-    #                         'the ordering of tensors in sets will change between runs. Please use a list instead.')
-    #     else:
-    #         param_group['params'] = list(params)
-    #
-    #     for param in param_group['params']:
-    #         if not isinstance(param, flow.Tensor):
-    #             raise TypeError("optimizer can only optimize Tensors, "
-    #                             "but one of the params is " + param.type())
-    #         if not param.is_leaf:
-    #             raise ValueError("can't optimize a non-leaf Tensor")
-    #
-    #     for name, default in self.defaults.items():
-    #         if default is required and name not in param_group:
-    #             raise ValueError("parameter group didn't specify a value of required optimization parameter " +
-    #                              name)
-    #         else:
-    #             param_group.setdefault(name, default)
-    #
-    #     params = param_group['params']
-    #     if len(params) != len(set(params)):
-    #         print("optimizer contains a parameter group with duplicate parameters; "
-    #                       "in future, this will cause an error; "
-    #                       "see github.com/pytorch/pytorch/issues/40967 for more information")
-    #
-    #     param_set = set()
-    #     for group in self.param_groups:
-    #         param_set.update(set(group['params']))
-    #
-    #     if not param_set.isdisjoint(set(param_group['params'])):
-    #         raise ValueError("some parameters appear in more than one parameter group")
-    #
-    #     self.param_groups.append(param_group)
-
-
-def b():
-    params = [flow.randn(10, 5), flow.randn(10)]
-    opt1 = Lbfgs(params, 0.01, tolerance_grad=inf)
-    # opt2 = Lbfgs(params, 0.01, tolerance_grad=-inf)
-
-    def closure():
-        return flow.tensor([10])
-
-    res1 = opt1.step(closure)
-    # res2 = opt2.step(closure)
-    print(res1)
-    # print(res2)
-
-b()
