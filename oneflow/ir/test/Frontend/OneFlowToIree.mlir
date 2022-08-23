@@ -1,8 +1,9 @@
 // RUN: oneflow-opt %s \
 // RUN: -split-input-file \
 // RUN: -lower-oneflow-to-tosa \
+// RUN: -tosa-make-broadcastable \
 // RUN: -verify-diagnostics -o - \
-// RUN: | ireec \
+// RUN: | python3 -m iree.compiler.tools.scripts.ireec \
 // RUN: --iree-input-type=tosa \
 // RUN: --iree-vm-bytecode-module-output-format=flatbuffer-binary \
 // RUN: -iree-hal-target-backends=dylib-llvm-aot \
@@ -60,7 +61,7 @@ oneflow.job @test_variable() -> tensor<64x3x7x7xf32>
         device_name = ["@0:0"],
         device_tag = "cpu",
         hierarchy = [1],
-        nd_sbp = ["B"],
+        parallel = #sbp.parallel<[] -> [#sbp.B]>,
         op_name = "fw.model.conv1.weight",
         output_lbns = ["fw.model.conv1.weight/out"],
         scope_symbol_id = 4611686018427432959 : i64,

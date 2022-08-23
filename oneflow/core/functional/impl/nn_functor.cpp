@@ -35,9 +35,9 @@ limitations under the License.
 #include "oneflow/core/functional/impl/common.h"
 #include "oneflow/core/functional/impl/unary_functor.h"
 #include "oneflow/core/job/lazy_mode.h"
+#include "oneflow/core/kernel/kernel_util.h"
 #include "oneflow/user/kernels/random_mask_like_kernel.h"
 #include "oneflow/user/kernels/dropout_kernel.h"
-#include "oneflow/core/register/ofblob.h"
 #include "oneflow/core/common/container_util.h"
 #include "oneflow/user/kernels/distributions/common.h"
 #include "oneflow/core/framework/nd_sbp.h"
@@ -267,6 +267,25 @@ class EmbeddingFunctor {
   std::shared_ptr<OpExpr> op_;
 };
 
+class MatMulNoBroadCastFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::shared_ptr<one::Tensor>& mat2) const {
+    const auto& input_shape = input->shape();
+    const auto& mat2_shape = mat2->shape();
+    CHECK_EQ_OR_RETURN(input_shape->NumAxes(), 2)
+        << Error::RuntimeError() << "self must be a matrix";
+    CHECK_EQ_OR_RETURN(mat2_shape->NumAxes(), 2)
+        << Error::RuntimeError() << "mat2 must be a matrix";
+    CHECK_EQ_OR_RETURN(input_shape->at(1), mat2_shape->at(0))
+        << Error::RuntimeError() << "mat1 and mat2 shapes cannot be multiplied ("
+        << std::to_string(input_shape->at(0)) << "x" << std::to_string(input_shape->at(1))
+        << " and " << std::to_string(mat2_shape->at(0)) << "x" << std::to_string(mat2_shape->at(1))
+        << ")";
+    return JUST(functional::MatMul(input, mat2, false, false, 1.0));
+  }
+};
+
 class MatMulFunctor {
  public:
   MatMulFunctor() {
@@ -282,26 +301,35 @@ class MatMulFunctor {
     const auto& a_shape = a->shape();
     const auto& b_shape = b->shape();
 
-    // TODO(): Support 1-d tensor by dot.
-    CHECK_GE_OR_RETURN(a_shape->NumAxes(), 2)
-        << Error::RuntimeError() << "Tensor a's dim should >= 2";
-    CHECK_GE_OR_RETURN(b_shape->NumAxes(), 2)
-        << Error::RuntimeError() << "Tensor b's dim should >= 2";
+    CHECK_GE_OR_RETURN(a_shape->NumAxes(), 1)
+        << Error::RuntimeError() << "Tensor a's dim should >= 1";
+    CHECK_GE_OR_RETURN(b_shape->NumAxes(), 1)
+        << Error::RuntimeError() << "Tensor b's dim should >= 1";
 
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<bool>("transpose_a", transpose_a));
     JUST(attrs.SetAttr<bool>("transpose_b", transpose_b));
     JUST(attrs.SetAttr<double>("alpha", alpha));
-    if (a_shape->NumAxes() != b_shape->NumAxes()) {
-      CHECK_EQ_OR_RETURN(b_shape->NumAxes(), 2)
-          << Error::RuntimeError()
-          << "Not support number of dimensions of a being less than number of dimensions of b!";
-      return OpInterpUtil::Dispatch<Tensor>(*bcast_matmul_op_, {a, b}, attrs);
+    const int64_t a_num_axes = a_shape->NumAxes();
+    const int64_t b_num_axes = b_shape->NumAxes();
+    if (a_num_axes == 1 && b_num_axes == 2) { return VectorMatrixProduct(a, b); }
+    if (a_num_axes == 2 && b_num_axes == 1) { return MatrixVectorProduct(a, b); }
+    if (a_num_axes == 2 && b_num_axes == 2) {
+      return OpInterpUtil::Dispatch<Tensor>(*matmul_op_, {a, b}, attrs);
     }
-    if (a_shape->NumAxes() > 2) {
-      return OpInterpUtil::Dispatch<Tensor>(*batch_matmul_op_, {a, b}, attrs);
+    if (a_num_axes == b_num_axes) {
+      bool if_batch_matmul = true;
+      for (int i = 0; i < a_num_axes - 2; ++i) {
+        if (a_shape->At(i) != b_shape->At(i)) {
+          if_batch_matmul = false;
+          break;
+        }
+      }
+      if (if_batch_matmul) {
+        return OpInterpUtil::Dispatch<Tensor>(*batch_matmul_op_, {a, b}, attrs);
+      }
     }
-    return OpInterpUtil::Dispatch<Tensor>(*matmul_op_, {a, b}, attrs);
+    return OpInterpUtil::Dispatch<Tensor>(*bcast_matmul_op_, {a, b}, attrs);
   }
 
  private:
@@ -340,6 +368,30 @@ class BatchMatMulFunctor {
 
  private:
   std::shared_ptr<OpExpr> batch_matmul_op_;
+};
+
+class VectorMatrixProductFunctor {
+ public:
+  VectorMatrixProductFunctor() {
+    vector_matrix_product_op_ = CHECK_JUST(
+        one::OpBuilder("vector_matrix_product").Input("a").Input("b").Output("out").Build());
+  }
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& vec,
+                           const std::shared_ptr<one::Tensor>& input) const {
+    const auto& vec_shape = vec->shape();
+    const auto& input_shape = input->shape();
+    CHECK_OR_RETURN(input_shape->NumAxes() == 2 && vec_shape->NumAxes() == 1)
+        << Error::RuntimeError() << "vector @ matrix expected, got "
+        << "1, " << input_shape->NumAxes() << ", " << vec_shape->NumAxes();
+    CHECK_EQ_OR_RETURN(vec_shape->at(0), input_shape->at(0))
+        << Error::RuntimeError() << "size mismatch, got " << 1 << ", "
+        << std::to_string(vec_shape->at(0)) << " x " << std::to_string(input_shape->at(0)) << ", "
+        << std::to_string(input_shape->at(1));
+    return OpInterpUtil::Dispatch<Tensor>(*vector_matrix_product_op_, {vec, input});
+  }
+
+ private:
+  std::shared_ptr<OpExpr> vector_matrix_product_op_;
 };
 
 class TensorDotIntDimsFunctor {
@@ -525,7 +577,7 @@ class FusedMLPFunctor {
 
 #if CUDA_VERSION >= 11060
     DeviceType device_type{};
-    if (x->is_consistent()) {
+    if (x->is_global()) {
       device_type = JUST(x->parallel_desc())->device_type();
     } else {
       device_type = JUST(x->device())->enum_type();
@@ -627,7 +679,7 @@ class FusedMatmulBiasAddReluDropoutFunctor {
 
 #if CUDA_VERSION >= 11060
     DeviceType device_type{};
-    if (x->is_consistent()) {
+    if (x->is_global()) {
       device_type = JUST(x->parallel_desc())->device_type();
     } else {
       device_type = JUST(x->device())->enum_type();
@@ -1063,6 +1115,11 @@ class BinaryCrossEntropyWithLogitsLossFunctor : public LossFunctorBase {
                                     .Input("pos_weight")
                                     .Output("out")
                                     .Build());
+    op_reduce_mean_ = CHECK_JUST(one::OpBuilder("binary_cross_entropy_with_logits_reduce_mean")
+                                     .Input("input")
+                                     .Input("target")
+                                     .Output("out")
+                                     .Build());
   }
   Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
                            const std::shared_ptr<one::Tensor>& target,
@@ -1071,6 +1128,19 @@ class BinaryCrossEntropyWithLogitsLossFunctor : public LossFunctorBase {
                            const std::string& reduction) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<bool>("has_pos_weight", pos_weight.has_value()));
+
+    if (pos_weight) {
+      const auto pos_weight_shape = JUST(pos_weight)->shape();
+      // pos weight shape = (), (1,), (1,1)... or (input/target.shape[-1],)
+      const bool is_pos_weight_shape_valid =
+          (pos_weight_shape->elem_cnt() == 1)
+          || (pos_weight_shape->NumAxes() == 1
+              && pos_weight_shape->At(0) == target->shape()->back());
+
+      CHECK_OR_RETURN(is_pos_weight_shape_valid)
+          << Error::RuntimeError()
+          << "pos_weight must be a vector with length equal to the number of classes.";
+    }
 
     std::shared_ptr<Tensor> out;
     if (weight) {
@@ -1086,6 +1156,9 @@ class BinaryCrossEntropyWithLogitsLossFunctor : public LossFunctorBase {
         out = JUST(
             OpInterpUtil::Dispatch<Tensor>(*op_pos_, {input, target, JUST(pos_weight)}, attrs));
       } else {
+        if (reduction == "mean") {
+          return OpInterpUtil::Dispatch<Tensor>(*op_reduce_mean_, {input, target});
+        }
         out = JUST(OpInterpUtil::Dispatch<Tensor>(*op_, {input, target}, attrs));
       }
     }
@@ -1097,25 +1170,28 @@ class BinaryCrossEntropyWithLogitsLossFunctor : public LossFunctorBase {
   std::shared_ptr<OpExpr> op_weight_;
   std::shared_ptr<OpExpr> op_pos_;
   std::shared_ptr<OpExpr> op_weight_pos_;
+  std::shared_ptr<OpExpr> op_reduce_mean_;
 };
 
-class NllLossFunctor {
+class NLLLossFunctor {
  public:
-  NllLossFunctor() {
+  NLLLossFunctor() {
     op_ = CHECK_JUST(one::OpBuilder("nll")
                          .Input("input")
                          .Input("target")
-                         .Output("out")
-                         .Output("total_weight")
+                         .Output("output")
+                         .Output("out_weight")
                          .Build());
+
     op_weight_ = CHECK_JUST(one::OpBuilder("nll")
                                 .Input("input")
                                 .Input("target")
                                 .Input("weight")
-                                .Output("out")
-                                .Output("total_weight")
+                                .Output("output")
+                                .Output("out_weight")
                                 .Build());
   }
+
   Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
                            const std::shared_ptr<one::Tensor>& target,
                            const Optional<one::Tensor>& weight, const int64_t& ignore_index,
@@ -1124,42 +1200,65 @@ class NllLossFunctor {
         << Error::RuntimeError() << "Reduction should be none, sum or mean.";
 
     const auto& input_shape = input->shape();
+    const int64_t K = input_shape->NumAxes();
+    CHECK_GE_OR_RETURN(K, 2) << Error::RuntimeError() << "Expected 2 or more dimensions";
+    const int64_t N = input_shape->At(0);
+    const int64_t C = input_shape->At(1);
+
     const auto& target_shape = target->shape();
-    CHECK_LE_OR_RETURN(input_shape->NumAxes(), 5)
-        << Error::RuntimeError() << "The number of input's axis should be less equal to 5. ";
-    CHECK_EQ_OR_RETURN(input_shape->NumAxes() - 1, target_shape->NumAxes())
-        << Error::RuntimeError()
-        << "The number of input's axis should be equal to the number of target's axis - 1. ";
+    CHECK_EQ_OR_RETURN(target_shape->NumAxes(), K - 1)
+        << Error::RuntimeError() << "Expected target dimensions (" << K - 1
+        << ") to match input dimensions (" << K << "), got " << target_shape->NumAxes();
+    CHECK_EQ_OR_RETURN(target_shape->At(0), N)
+        << Error::RuntimeError() << "Expected input batch_size (" << N
+        << ") to match target batch_size (" << target_shape->At(0) << ")";
+
+    std::shared_ptr<one::Tensor> input_;
+    std::shared_ptr<one::Tensor> target_;
+    if (K > 2) {
+      DimVector idea_target_dim_vec;
+      idea_target_dim_vec.push_back(N);
+      for (int64_t i = 2; i < K; ++i) { idea_target_dim_vec.push_back(input_shape->At(i)); }
+      Shape idea_target_shape(idea_target_dim_vec);
+      CHECK_EQ_OR_RETURN(*target_shape, idea_target_shape)
+          << Error::RuntimeError() << "Expected target shape " << idea_target_shape.ToString()
+          << ", got " << target_shape->ToString();
+
+      std::vector<int> perm(input_shape->dim_vec().size(), 0);
+      perm[perm.size() - 1] = 1;
+      for (size_t i = 1; i < perm.size() - 1; ++i) { perm[i] = i + 1; }
+
+      input_ = JUST(sequence_function(functional::Transpose)
+                        .then(std::bind(functional::Reshape, std::placeholders::_1, Shape({-1, C})))
+                        .call(input, perm));
+      target_ = JUST(functional::Flatten(target, 0, K - 2));
+    } else {
+      input_ = input;
+      target_ = target;
+    }
 
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<int64_t>("ignore_index", ignore_index));
 
-    std::vector<int> input_perm(input_shape->dim_vec().size(), 0);
-    input_perm[input_perm.size() - 1] = 1;
-    for (size_t i = 1; i < input_perm.size() - 1; ++i) { input_perm[i] = i + 1; }
-
-    const auto input_ = JUST(sequence_function(functional::Transpose)
-                                 .then(std::bind(functional::Reshape, std::placeholders::_1,
-                                                 Shape({-1, input_shape->At(1)})))
-                                 .call(input, input_perm));
-    auto target_ = JUST(functional::Flatten(target, 0, target_shape->NumAxes() - 1));
-
-    std::shared_ptr<TensorTuple> kernel_result;
-    std::shared_ptr<Tensor> result;
+    std::shared_ptr<TensorTuple> nll_result;
     if (weight) {
-      kernel_result = JUST(
+      nll_result = JUST(
           OpInterpUtil::Dispatch<TensorTuple>(*op_weight_, {input_, target_, JUST(weight)}, attrs));
     } else {
-      kernel_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_, {input_, target_}, attrs));
+      nll_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_, {input_, target_}, attrs));
     }
-    result = JUST(functional::Reshape(kernel_result->at(0), *target_shape));
-    if (reduction == "none") { return result; }
+    auto output = JUST(VectorAt(*nll_result, 0));
 
-    result = JUST(functional::ReduceSum(result, {}, false));
+    if (K > 2) { output = JUST(functional::Reshape(output, *target_shape)); }
 
-    if (reduction == "sum") { return result; }
+    if (reduction == "none") { return output; }
 
-    return functional::Div(result, kernel_result->at(1));
+    auto sum = JUST(functional::ReduceSum(output, {}, false));
+
+    if (reduction == "sum") { return sum; }
+
+    auto total_weight = JUST(functional::ReduceSum(JUST(VectorAt(*nll_result, 1)), {}, false));
+    return functional::Div(sum, total_weight);
   }
 
  private:
@@ -1171,18 +1270,20 @@ class CrossEntropyFunctor {
  public:
   CrossEntropyFunctor() {
     op_log_softmax_ = CHECK_JUST(one::OpBuilder("log_softmax").Input("in").Output("prob").Build());
+
     op_nll_ = CHECK_JUST(one::OpBuilder("nll")
                              .Input("input")
                              .Input("target")
-                             .Output("out")
-                             .Output("total_weight")
+                             .Output("output")
+                             .Output("out_weight")
                              .Build());
+
     op_nll_weight_ = CHECK_JUST(one::OpBuilder("nll")
                                     .Input("input")
                                     .Input("target")
                                     .Input("weight")
-                                    .Output("out")
-                                    .Output("total_weight")
+                                    .Output("output")
+                                    .Output("out_weight")
                                     .Build());
   }
   Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
@@ -1193,8 +1294,6 @@ class CrossEntropyFunctor {
         << Error::RuntimeError() << "Reduction should be none, sum or mean.";
     const auto& input_shape = input->shape();
     const auto& target_shape = target->shape();
-    MutableAttrMap attrs;
-    JUST(attrs.SetAttr<int64_t>("ignore_index", ignore_index));
 
     std::vector<int> input_perm(input_shape->dim_vec().size(), 0);
     input_perm[input_perm.size() - 1] = 1;
@@ -1210,21 +1309,26 @@ class CrossEntropyFunctor {
 
     const auto target_ = JUST(functional::Flatten(target, 0, target->shape()->NumAxes() - 1));
 
-    std::shared_ptr<TensorTuple> kernel_result;
-    std::shared_ptr<Tensor> result;
+    MutableAttrMap attrs;
+    JUST(attrs.SetAttr<int64_t>("ignore_index", ignore_index));
+
+    std::shared_ptr<TensorTuple> nll_result;
     if (weight) {
-      kernel_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(
+      nll_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(
           *op_nll_weight_, {input_, target_, JUST(weight)}, attrs));
     } else {
-      kernel_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_nll_, {input_, target_}, attrs));
+      nll_result = JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_nll_, {input_, target_}, attrs));
     }
-    result = JUST(functional::Reshape((*kernel_result)[0], *target_shape));
-    if (reduction == "none") { return result; }
 
-    result = JUST(functional::ReduceSum(result, {}, false));
-    if (reduction == "sum") { return result; }
+    auto output = JUST(VectorAt(*nll_result, 0));
+    output = JUST(functional::Reshape(output, *target_shape));
+    if (reduction == "none") { return output; }
 
-    return functional::Div(result, kernel_result->at(1));
+    auto sum = JUST(functional::ReduceSum(output, {}, false));
+    if (reduction == "sum") { return sum; }
+
+    auto total_weight = JUST(functional::ReduceSum(JUST(VectorAt(*nll_result, 1)), {}, false));
+    return functional::Div(sum, total_weight);
   }
 
  private:
@@ -1334,7 +1438,7 @@ class SparseSoftmaxCrossEntropyFunctor {
 
   Maybe<bool> RunWithMsVersion(const std::shared_ptr<one::Tensor>& logits,
                                const std::shared_ptr<one::Tensor>& label) const {
-    if (!(logits->is_consistent() && label->is_consistent())) { return false; }
+    if (!(logits->is_global() && label->is_global())) { return false; }
 
     if (JUST(logits->parallel_desc())->parallel_num() == 1) { return false; }
 
@@ -1412,12 +1516,12 @@ class SparseSoftmaxCrossEntropyFunctor {
 
       s0s1_sbp_parallels.emplace_back(logits_nd_sbp.sbp_parallel(0));
       s0s1_sbp_parallels.emplace_back(logits_nd_sbp.sbp_parallel(1));
-      max_global_stage_input0 = JUST(functional::ToConsistent(
-          max_device_stage->at(0), JUST(max_device_stage->at(0)->parallel_desc()),
-          new_sbp_parallels, s0s1_sbp_parallels, /* check_meta */ false));
-      max_global_stage_input1 = JUST(functional::ToConsistent(
-          max_device_stage->at(2), JUST(max_device_stage->at(0)->parallel_desc()),
-          new_sbp_parallels, s0s1_sbp_parallels, /* check_meta */ false));
+      max_global_stage_input0 = JUST(functional::ToGlobal(
+          (*max_device_stage)[0], JUST((*max_device_stage)[0]->parallel_desc()), new_sbp_parallels,
+          s0s1_sbp_parallels, /* check_meta */ false, /*copy=*/false));
+      max_global_stage_input1 = JUST(functional::ToGlobal(
+          (*max_device_stage)[2], JUST((*max_device_stage)[0]->parallel_desc()), new_sbp_parallels,
+          s0s1_sbp_parallels, /* check_meta */ false, /*copy=*/false));
     }
     // op_reduce_max_global_stage_
     attrs.clear();
@@ -1427,9 +1531,9 @@ class SparseSoftmaxCrossEntropyFunctor {
         *op_reduce_max_global_stage_, {max_global_stage_input0, max_global_stage_input1}, attrs));
     auto& broadcast_sub_input = max_global_stage->at(0);
     if (logits_nd_sbp.sbp_parallel_size() == 2) {
-      broadcast_sub_input = JUST(functional::ToConsistent(
-          broadcast_sub_input, JUST(max_device_stage->at(0)->parallel_desc()), new_sbp_parallels,
-          new_sbp_parallels, /* check_meta */ false));
+      broadcast_sub_input = JUST(functional::ToGlobal(
+          broadcast_sub_input, JUST((*max_device_stage)[0]->parallel_desc()), new_sbp_parallels,
+          new_sbp_parallels, /* check_meta */ false, /*copy=*/false));
     }
     // op_broadcast_sub_
     attrs.clear();
@@ -1446,9 +1550,9 @@ class SparseSoftmaxCrossEntropyFunctor {
     std::shared_ptr<Tensor> broadcast_div_input1 = output_reduce_sum->at(0);
     if (logits_nd_sbp.sbp_parallel_size() == 2) {
       std::vector<Symbol<SbpParallel>> empty_grad_sbp_parallels;
-      broadcast_div_input1 = JUST(functional::ToConsistent(
-          output_reduce_sum->at(0), JUST(output_reduce_sum->at(0)->parallel_desc()),
-          new_sbp_parallels, new_sbp_parallels, /* check_meta */ false));
+      broadcast_div_input1 = JUST(functional::ToGlobal(
+          (*output_reduce_sum)[0], JUST((*output_reduce_sum)[0]->parallel_desc()),
+          new_sbp_parallels, new_sbp_parallels, /* check_meta */ false, /*copy=*/false));
     }
     // op_broadcast_div_
     attrs.clear();
@@ -1755,9 +1859,23 @@ class NormalFunctor {
   std::shared_ptr<OpExpr> op_;
 };
 
-class ConsistentNormalFunctor {
+class Normal2Functor {
  public:
-  ConsistentNormalFunctor() { op_ = CHECK_JUST(one::OpBuilder("normal").Output("out").Build()); }
+  Maybe<Tensor> operator()(const float& mean, const float& std, const int32_t& shape,
+                           const Optional<one::Tensor>& out,
+                           const Optional<Symbol<DType>>& optional_dtype,
+                           const Optional<Symbol<Device>>& optional_device,
+                           const Optional<one::Generator>& optional_generator,
+                           const bool& requires_grad) const {
+    const Shape size = Shape({shape});
+    return Normal(mean, std, size, out, optional_dtype, optional_device, optional_generator,
+                  requires_grad);
+  }
+};
+
+class GlobalNormalFunctor {
+ public:
+  GlobalNormalFunctor() { op_ = CHECK_JUST(one::OpBuilder("normal").Output("out").Build()); }
   Maybe<Tensor> operator()(const float& mean, const float& std, const Shape& shape,
                            const Optional<one::Tensor>& out, const Symbol<ParallelDesc>& placement,
                            const std::vector<Symbol<SbpParallel>>& sbp_tuple,
@@ -1816,6 +1934,20 @@ class ConsistentNormalFunctor {
 
  private:
   std::shared_ptr<OpExpr> op_;
+};
+
+class GlobalNormal2Functor {
+ public:
+  Maybe<Tensor> operator()(const float& mean, const float& std, const int32_t& shape,
+                           const Optional<one::Tensor>& out, const Symbol<ParallelDesc>& placement,
+                           const std::vector<Symbol<SbpParallel>>& sbp_tuple,
+                           const Optional<Symbol<DType>>& optional_dtype,
+                           const Optional<one::Generator>& optional_generator,
+                           const bool& requires_grad) const {
+    const Shape size = Shape({shape});
+    return GlobalNormal(mean, std, size, out, placement, sbp_tuple, optional_dtype,
+                        optional_generator, requires_grad);
+  }
 };
 
 class NormalizationFunctor {
@@ -2024,65 +2156,253 @@ class NormalizationAddReluFunctor {
   std::shared_ptr<OpExpr> fused_addend_norm_training_no_stats_op_;
 };
 
-class PadFunctor {
+class ConstantPadFunctor {
  public:
-  PadFunctor() {
-    pad_ = CHECK_JUST(one::OpBuilder("pad").Input("x").Output("y").Build());
-    reflect_pad_ = CHECK_JUST(one::OpBuilder("reflection_pad2d").Input("x").Output("y").Build());
-    replicate_pad_ = CHECK_JUST(one::OpBuilder("replication_pad2d").Input("x").Output("y").Build());
+  ConstantPadFunctor() {
+    constant_pad_ = CHECK_JUST(one::OpBuilder("pad").Input("x").Output("y").Build());
   }
-  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x, const std::vector<int64_t>& pad,
-                           const std::string& mode, const Scalar& value) const {
-    const int64_t ndim = x->shape()->NumAxes();
-    CHECK_LE_OR_RETURN(pad.size(), 2 * ndim)
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::vector<int64_t>& pad, const Scalar& value) const {
+    const int64_t ndim = input->shape()->NumAxes();
+    const int64_t pad_size = pad.size();
+    CHECK_LE_OR_RETURN(pad_size, 2 * ndim)
         << Error::RuntimeError() << "Pad size should less than or equal to input axes * 2.";
+
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<std::vector<int64_t>>("padding", pad));
-    if (mode == "constant") {
-      CHECK_EQ_OR_RETURN(pad.size() % 2, 0)
-          << Error::RuntimeError() << "Length of pad must be even but instead it equals "
-          << pad.size();
-      if (IsFloatingDataType(x->dtype()->data_type())
-          || x->dtype()->data_type() == DataType::kFloat16) {
-        JUST(attrs.SetAttr<double>("floating_constant_value", value.As<double>()));
-        JUST(attrs.SetAttr<int64_t>("integral_constant_value", 0));
-      } else if (IsIntegralDataType(x->dtype()->data_type())) {
-        JUST(attrs.SetAttr<double>("floating_constant_value", 0));
-        JUST(attrs.SetAttr<int64_t>("integral_constant_value", value.As<int64_t>()));
-      } else {
-        UNIMPLEMENTED_THEN_RETURN() << "Data type should be floating or integral type.";
+    CHECK_EQ_OR_RETURN(pad_size % 2, 0)
+        << Error::RuntimeError() << "Length of pad must be even but instead it equals " << pad_size;
+    if (IsFloatingDataType(input->dtype()->data_type())
+        || input->dtype()->data_type() == DataType::kFloat16) {
+      JUST(attrs.SetAttr<double>("floating_constant_value", value.As<double>()));
+      JUST(attrs.SetAttr<int64_t>("integral_constant_value", 0));
+    } else if (IsIntegralDataType(input->dtype()->data_type())) {
+      JUST(attrs.SetAttr<double>("floating_constant_value", 0));
+      JUST(attrs.SetAttr<int64_t>("integral_constant_value", value.As<int64_t>()));
+    } else {
+      UNIMPLEMENTED_THEN_RETURN() << "Data type should be floating or integral type.";
+    }
+
+    std::vector<int64_t> pad_before(ndim, 0);
+    std::vector<int64_t> pad_after(ndim, 0);
+    const int64_t pad_pair = pad_size / 2;
+    for (int64_t i = 0; i < pad_pair; ++i) {
+      pad_before[ndim - i - 1] = pad[2 * i];
+      pad_after[ndim - i - 1] = pad[2 * i + 1];
+    }
+    JUST(attrs.SetAttr<std::vector<int64_t>>("padding_before", pad_before));
+    JUST(attrs.SetAttr<std::vector<int64_t>>("padding_after", pad_after));
+    return OpInterpUtil::Dispatch<Tensor>(*constant_pad_, {input}, attrs);
+  }
+
+ private:
+  std::shared_ptr<OpExpr> constant_pad_;
+};
+
+class ReflectionPadFunctor {
+ public:
+  ReflectionPadFunctor() {
+    reflect_pad1d_ = CHECK_JUST(one::OpBuilder("reflection_pad1d").Input("x").Output("y").Build());
+    reflect_pad2d_ = CHECK_JUST(one::OpBuilder("reflection_pad2d").Input("x").Output("y").Build());
+  }
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::vector<int64_t>& pad) const {
+    MutableAttrMap attrs;
+    JUST(attrs.SetAttr<std::vector<int64_t>>("padding", pad));
+    const int64_t pad_size = pad.size();
+    const size_t ndim = input->ndim();
+    CHECK_LE_OR_RETURN(pad_size, 2 * ndim)
+        << Error::RuntimeError() << "Pad size should less than or equal to input axes * 2.";
+
+    if (pad_size == 2) {
+      // 2D/3D reflect padding
+      CHECK_OR_RETURN((ndim == 2 && input->shape()->At(1) != 0)
+                      || (ndim == 3 && input->shape()->At(1) != 0 && input->shape()->At(2) != 0))
+          << "2D or 3D (batch mode) tensor expected for input, but got: " << ndim;
+      const int64_t pad_left = pad[0];
+      const int64_t pad_right = pad[1];
+      const int64_t dim_w = (ndim == 3) ? 2 : 1;
+      const int64_t input_width = input->shape()->At(dim_w);
+      const int64_t output_w = input_width + pad_left + pad_right;
+      CHECK_OR_RETURN(pad_left < input_width && pad_right < input_width)
+          << "Padding size should be less than the corresponding input dimension, but got: "
+             "padding ("
+          << pad_left << ", " << pad_right << ") at dimension " << dim_w << " of input "
+          << input->shape()->ToString();
+      CHECK_OR_RETURN(output_w >= 1)
+          << "input (W: " << input_width << ")is too small. Calculated output W: " << output_w;
+
+      if (ndim == 2) {
+        // for 2D input
+        auto unsqueezed_input = JUST(functional::Unsqueeze(input, 0));
+        auto unsqueezed_output =
+            JUST(OpInterpUtil::Dispatch<Tensor>(*reflect_pad1d_, {unsqueezed_input}, attrs));
+        return JUST(functional::Squeeze(unsqueezed_output, std::vector<int32_t>{0}));
+      }
+      return OpInterpUtil::Dispatch<Tensor>(*reflect_pad1d_, {input}, attrs);
+    } else if (pad_size == 4) {
+      // 3D/4D reflect padding
+      bool valid_dims = input->shape()->At(1) != 0 && input->shape()->At(2) != 0;
+      CHECK_OR_RETURN((ndim == 3 && valid_dims)
+                      || (ndim == 4 && valid_dims && input->shape()->At(3) != 0))
+          << "3D or 4D (batch mode) tensor expected for input, but got: " << ndim;
+
+      int dim_h = 1;
+      int dim_w = 2;
+      if (ndim == 4) {
+        dim_w++;
+        dim_h++;
       }
 
-      std::vector<int64_t> pad_before(ndim, 0);
-      std::vector<int64_t> pad_after(ndim, 0);
-      const int64_t pad_pair = pad.size() / 2;
-      for (int64_t i = 0; i < pad_pair; ++i) {
-        pad_before[ndim - i - 1] = pad[2 * i];
-        pad_after[ndim - i - 1] = pad[2 * i + 1];
-      }
-      JUST(attrs.SetAttr<std::vector<int64_t>>("padding_before", pad_before));
-      JUST(attrs.SetAttr<std::vector<int64_t>>("padding_after", pad_after));
-      return OpInterpUtil::Dispatch<Tensor>(*pad_, {x}, attrs);
+      const int64_t pad_left = pad[0];
+      const int64_t pad_right = pad[1];
+      const int64_t pad_top = pad[2];
+      const int64_t pad_bottom = pad[3];
 
-    } else if (mode == "reflect") {
-      const int64_t pad_h = x->shape()->dim_vec().at(2);
-      const int64_t pad_w = x->shape()->dim_vec().at(3);
-      CHECK_OR_RETURN(pad[2] < pad_h && pad[3] < pad_h && pad[0] < pad_w && pad[1] < pad_w)
+      const int64_t input_h = input->shape()->At(dim_h);
+      const int64_t input_w = input->shape()->At(dim_w);
+      const int64_t output_h = input_h + pad_top + pad_bottom;
+      const int64_t output_w = input_w + pad_left + pad_right;
+      CHECK_OR_RETURN(pad_left < input_w && pad_right < input_w)
           << Error::RuntimeError()
-          << "padding size should be less than the corresponding input dimension!";
-      return OpInterpUtil::Dispatch<Tensor>(*reflect_pad_, {x}, attrs);
+          << "Padding size should be less than the corresponding input "
+             "dimension, but got: padding ("
+          << pad_left << ", " << pad_right << ") at dimension " << dim_w << " of input " << ndim;
+
+      CHECK_OR_RETURN(pad_top < input_h && pad_bottom < input_h)
+          << Error::RuntimeError()
+          << "Padding size should be less than the corresponding input "
+             "dimension, but got: padding ("
+          << pad_top << ", " << pad_bottom << ") at dimension " << dim_h << " of input " << ndim;
+
+      CHECK_OR_RETURN(output_w >= 1 || output_h >= 1)
+          << Error::RuntimeError() << "input (H: " << input_h << ", W: " << input_w
+          << ")is too small. Calculated output H: " << output_h << " W: " << output_w;
+
+      if (ndim == 3) {
+        // for 3D input
+        auto unsqueezed_input = JUST(functional::Unsqueeze(input, 0));
+        auto unsqueezed_output =
+            JUST(OpInterpUtil::Dispatch<Tensor>(*reflect_pad2d_, {unsqueezed_input}, attrs));
+        return JUST(functional::Squeeze(unsqueezed_output, std::vector<int32_t>{0}));
+      }
+      return OpInterpUtil::Dispatch<Tensor>(*reflect_pad2d_, {input}, attrs);
+    } else if (pad_size == 6) {
+      UNIMPLEMENTED_THEN_RETURN() << "5D reflect padding are not supported for now";
+    } else {
+      UNIMPLEMENTED_THEN_RETURN()
+          << "Only 2D, 3D, 4D, 5D padding with non-constant padding are supported for now";
+    }
+  }
+
+ private:
+  std::shared_ptr<OpExpr> reflect_pad1d_;
+  std::shared_ptr<OpExpr> reflect_pad2d_;
+};
+
+class ReplicationPadFunctor {
+ public:
+  ReplicationPadFunctor() {
+    replicate_pad1d_ =
+        CHECK_JUST(one::OpBuilder("replication_pad1d").Input("x").Output("y").Build());
+    replicate_pad2d_ =
+        CHECK_JUST(one::OpBuilder("replication_pad2d").Input("x").Output("y").Build());
+  }
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::vector<int64_t>& pad) const {
+    MutableAttrMap attrs;
+    JUST(attrs.SetAttr<std::vector<int64_t>>("padding", pad));
+    const int64_t pad_size = pad.size();
+    const size_t ndim = input->ndim();
+    CHECK_LE_OR_RETURN(pad_size, 2 * ndim)
+        << Error::RuntimeError() << "Pad size should less than or equal to input axes * 2.";
+    if (pad_size == 2) {
+      // 2D/3D replicate padding
+      CHECK_OR_RETURN((ndim == 2 && input->shape()->At(0) != 0 && input->shape()->At(1) != 0)
+                      || (ndim == 3 && input->shape()->At(1) != 0 && input->shape()->At(2) != 0))
+          << "Expected 2D or 3D (batch mode) tensor with possibly 0 batch size and other "
+             "non-zero dimensions for input, but got: "
+          << ndim;
+      const int64_t pad_left = pad[0];
+      const int64_t pad_right = pad[1];
+      const int64_t dim_w = (ndim == 3) ? 2 : 1;
+      const int64_t input_width = input->shape()->At(dim_w);
+      const int64_t output_w = input_width + pad_left + pad_right;
+      CHECK_OR_RETURN(output_w >= 1)
+          << "input (W: " << input_width << ")is too small. Calculated output W: " << output_w;
+
+      if (ndim == 2) {
+        // for 2D input
+        auto unsqueezed_input = JUST(functional::Unsqueeze(input, 0));
+        auto unsqueezed_output =
+            JUST(OpInterpUtil::Dispatch<Tensor>(*replicate_pad1d_, {unsqueezed_input}, attrs));
+        return JUST(functional::Squeeze(unsqueezed_output, std::vector<int32_t>{0}));
+      }
+      return OpInterpUtil::Dispatch<Tensor>(*replicate_pad1d_, {input}, attrs);
+    } else if (pad_size == 4) {
+      // 3D/4D replicate padding
+      bool valid_dims = input->shape()->At(1) != 0 && input->shape()->At(2) != 0;
+      CHECK_OR_RETURN((ndim == 3 && valid_dims)
+                      || (ndim == 4 && valid_dims && input->shape()->At(3) != 0))
+          << "3D or 4D (batch mode) tensor expected for input, but got: " << ndim;
+
+      int dim_h = 1;
+      int dim_w = 2;
+      if (ndim == 4) {
+        dim_w++;
+        dim_h++;
+      }
+
+      const int64_t pad_left = pad[0];
+      const int64_t pad_right = pad[1];
+      const int64_t pad_top = pad[2];
+      const int64_t pad_bottom = pad[3];
+
+      const int64_t input_h = input->shape()->At(dim_h);
+      const int64_t input_w = input->shape()->At(dim_w);
+      const int64_t output_h = input_h + pad_top + pad_bottom;
+      const int64_t output_w = input_w + pad_left + pad_right;
+      CHECK_OR_RETURN(output_w >= 1 || output_h >= 1)
+          << Error::RuntimeError() << "input (H: " << input_h << ", W: " << input_w
+          << ")is too small. Calculated output H: " << output_h << " W: " << output_w;
+
+      if (ndim == 3) {
+        // for 3D input
+        auto unsqueezed_input = JUST(functional::Unsqueeze(input, 0));
+        auto unsqueezed_output =
+            JUST(OpInterpUtil::Dispatch<Tensor>(*replicate_pad2d_, {unsqueezed_input}, attrs));
+        return JUST(functional::Squeeze(unsqueezed_output, std::vector<int32_t>{0}));
+      }
+      return OpInterpUtil::Dispatch<Tensor>(*replicate_pad2d_, {input}, attrs);
+    } else if (pad_size == 6) {
+      UNIMPLEMENTED_THEN_RETURN() << "5D replicate padding are not supported for now";
+    } else {
+      UNIMPLEMENTED_THEN_RETURN()
+          << "Only 2D, 3D, 4D, 5D padding with non-constant padding are supported for now";
+    }
+  }
+
+ private:
+  std::shared_ptr<OpExpr> replicate_pad1d_;
+  std::shared_ptr<OpExpr> replicate_pad2d_;
+};
+
+class PadFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::vector<int64_t>& pad, const std::string& mode,
+                           const Scalar& value) const {
+    if (mode == "constant") {
+      return functional::ConstantPad(input, pad, value);
+    } else if (mode == "reflect") {
+      return functional::ReflectionPad(input, pad);
     } else if (mode == "replicate") {
-      return OpInterpUtil::Dispatch<Tensor>(*replicate_pad_, {x}, attrs);
+      return functional::ReplicationPad(input, pad);
     } else {
       UNIMPLEMENTED_THEN_RETURN() << "Pad mode is " << mode
                                   << ", but only constant, reflect and replicate are valid.";
     }
   }
-
- private:
-  std::shared_ptr<OpExpr> pad_;
-  std::shared_ptr<OpExpr> reflect_pad_;
-  std::shared_ptr<OpExpr> replicate_pad_;
 };
 
 class DropoutFunctor {
@@ -2135,6 +2455,103 @@ class DropoutFunctor {
   std::shared_ptr<OpExpr> dropout_op_;
   std::shared_ptr<OpExpr> dropout_addend_op_;
   std::shared_ptr<OpExpr> add_op_;
+};
+
+namespace {
+Maybe<Tensor> MakeFeatureNoise(const std::shared_ptr<one::Tensor>& x) {
+  const int64_t ndim = x->ndim();
+  CHECK_GE_OR_RETURN(ndim, 2) << Error::RuntimeError()
+                              << "Feature dropout requires at least 2 dimensions in the input";
+  std::vector<int64_t> sizes;
+  sizes.reserve(ndim);
+  sizes.push_back(x->shape()->At(0));
+  sizes.push_back(x->shape()->At(1));
+  for (int i = 2; i < ndim; i++) { sizes.push_back(1); }
+  return JUST(Empty(Shape(sizes), x->dtype(), JUST(x->device()), false));
+}
+
+Maybe<Tensor> DropoutImpl(const std::shared_ptr<one::Tensor>& input, const float& p,
+                          const bool& train) {
+  CHECK_EQ_OR_RETURN(p >= 0 && p <= 1, true)
+      << "dropout probability has to be between 0 and 1, but got " << p;
+  if (p == 0 || !train || input->shape()->elem_cnt() == 0) { return input; }
+  if (p == 1) {
+    std::shared_ptr<Tensor> other =
+        JUST(Constant(*input->shape(), Scalar(0.0), input->dtype(), JUST(input->device())));
+    return InplaceMul(input, other);
+  }
+  std::shared_ptr<Tensor> noise = JUST(MakeFeatureNoise(input));
+  noise = JUST(BernoulliProb(noise, 1.0 - p, noise->dtype(), JUST(one::DefaultAutoGenerator())));
+  noise = JUST(InplaceScalarDiv(noise, Scalar(1.0 - p)));
+  noise = JUST(InplaceMul(input, noise));
+  return noise;
+}
+}  // namespace
+
+class Dropout1dFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input, const float& p,
+                           const bool& training) const {
+    CHECK_EQ_OR_RETURN(p < 0 || p > 1.0, true)
+        << "dropout probability has to be between 0 and 1, but got " << p;
+    const int input_dim = input->ndim();
+    CHECK_EQ_OR_RETURN(input_dim != 2 && input_dim != 3, true)
+        << "dropout1d: Expected 2D or 3D input, but received a {inp_dim}D input. "
+           "Note that dropout1d exists to provide channel-wise dropout on inputs with 1 "
+           "spatial dimension, a channel dimension, and an optional batch dimension "
+           "(i.e. 2D or 3D inputs).";
+    bool is_batched = (input_dim == 3);
+    std::shared_ptr<one::Tensor> result;
+    if (!is_batched) { result = JUST(Unsqueeze(input, 0)); }
+    result = JUST(DropoutImpl(result, p, training));
+    if (!is_batched) { result = JUST(Squeeze(result, std::vector<int32_t>{0})); }
+    return result;
+  }
+};
+
+class Dropout2dFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input, const float& p,
+                           const bool& training) const {
+    CHECK_EQ_OR_RETURN(p < 0 || p > 1.0, true)
+        << "dropout probability has to be between 0 and 1, but got " << p;
+    const int input_dim = input->ndim();
+    CHECK_EQ_OR_RETURN(input_dim != 3 && input_dim != 4, true)
+        << "dropout2d: Received a {inp_dim}-D input to dropout2d, which is deprecated "
+           "and will result in an error in a future release. To retain the behavior "
+           "and silence this warning, please use dropout instead. Note that dropout2d "
+           "exists to provide channel-wise dropout on inputs with 2 spatial dimensions, "
+           "a channel dimension, and an optional batch dimension (i.e. 3D or 4D inputs).";
+    CHECK_EQ_OR_RETURN(input_dim == 3, true)
+        << "dropout2d: Received a 3D input to dropout2d and assuming that channel-wise "
+           "1D dropout behavior is desired - input is interpreted as shape (N, C, L), where C "
+           "is the channel dim. This behavior will change in a future release to interpret the "
+           "input as one without a batch dimension, i.e. shape (C, H, W). To maintain the 1D "
+           "channel-wise dropout behavior, please switch to using dropout1d instead.";
+    return JUST(DropoutImpl(input, p, training));
+  }
+};
+
+class Dropout3dFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input, const float& p,
+                           const bool& training) const {
+    CHECK_EQ_OR_RETURN(p < 0 || p > 1.0, true)
+        << "dropout probability has to be between 0 and 1, but got " << p;
+    const int input_dim = input->ndim();
+    CHECK_EQ_OR_RETURN(input_dim != 4 && input_dim != 5, true)
+        << "dropout3d: Received a {inp_dim}-D input to dropout3d, which is deprecated "
+           "and will result in an error in a future release. To retain the behavior "
+           "and silence this warning, please use dropout instead. Note that dropout3d "
+           "exists to provide channel-wise dropout on inputs with 3 spatial dimensions, "
+           "a channel dimension, and an optional batch dimension (i.e. 4D or 5D inputs).";
+    bool is_batched = (input_dim == 5);
+    std::shared_ptr<one::Tensor> result;
+    if (!is_batched) { result = JUST(Unsqueeze(input, 0)); }
+    result = JUST(DropoutImpl(result, p, training));
+    if (!is_batched) { result = JUST(Squeeze(result, std::vector<int32_t>{0})); }
+    return result;
+  }
 };
 
 class DropoutGradFunctor {
@@ -2210,11 +2627,11 @@ class UnfoldFunctor {
   UnfoldFunctor() {
     unfold_op_ = CHECK_JUST(one::OpBuilder("unfold").Input("x").Output("y").Build());
   }
-  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x, const std::string& data_format,
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x,
                            const std::vector<int32_t>& kernel_size,
                            const std::vector<int32_t>& dilation_rate,
-                           const std::vector<int32_t>& padding,
-                           const std::vector<int32_t>& strides) const {
+                           const std::vector<int32_t>& padding, const std::vector<int32_t>& strides,
+                           const std::string& data_format) const {
     const auto& x_shape = x->shape();
     // Only Support 4d tensor now.
     CHECK_EQ_OR_RETURN(x_shape->NumAxes(), 4)
@@ -2236,17 +2653,18 @@ class UnfoldFunctor {
 class FoldFunctor {
  public:
   FoldFunctor() { fold_op_ = CHECK_JUST(one::OpBuilder("fold").Input("x").Output("y").Build()); }
-  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x, const std::string& data_format,
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x,
                            const std::vector<int32_t>& output_size,
                            const std::vector<int32_t>& kernel_size,
                            const std::vector<int32_t>& dilation_rate,
-                           const std::vector<int32_t>& padding,
-                           const std::vector<int32_t>& strides) const {
+                           const std::vector<int32_t>& padding, const std::vector<int32_t>& strides,
+                           const std::string& data_format) const {
     const auto& x_shape = x->shape();
     // Only Support 3d tensor fold now. format is (N, C*K*K, L)
     CHECK_EQ_OR_RETURN(x_shape->NumAxes(), 3)
         << Error::RuntimeError() << "Input Tensor dim should == 3";
     MutableAttrMap attrs;
+
     JUST(attrs.SetAttr<std::string>("data_format", data_format));
     JUST(attrs.SetAttr<std::vector<int32_t>>("output_size", output_size));
     JUST(attrs.SetAttr<std::vector<int32_t>>("kernel_size", kernel_size));
@@ -2277,9 +2695,10 @@ class OneHotFunctor {
       auto tensor_max = JUST(functional::ReduceMax(input, axis, false));
 
       int64_t max = 0;
-      const auto& callback = [&](uint64_t of_blob_ptr) {
-        auto* of_blob = reinterpret_cast<OfBlob*>(of_blob_ptr);
-        of_blob->AutoMemCopyTo<int64_t>(&max, 1);  // copy 1 scalar(int64_t) tensor's value to max
+      const auto& callback = [&](ep::Stream* stream,
+                                 const std::shared_ptr<vm::EagerBlobObject>& eager_blob_object) {
+        SyncAutoMemcpy(stream, &max, eager_blob_object->dptr(), sizeof(max),
+                       memory::MakeHostMemCase(), eager_blob_object->mem_case());
       };
       JUST(SyncAccessTensorWithTimeOut(tensor_max, callback, "const"));
       JUST(attrs.SetAttr<int64_t>("depth", max + 1));
@@ -2310,6 +2729,18 @@ class OneHotFunctor {
   std::shared_ptr<OpExpr> one_hot_op_;
 };
 
+class PairwiseDistanceFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<Tensor>& x, const std::shared_ptr<Tensor>& y,
+                           const float& p, const double& eps, bool keepdim) const {
+    const int64_t xdim = x->ndim();
+    const int64_t ydim = y->ndim();
+    const int64_t output_dim = xdim > ydim ? xdim : ydim;
+    const auto& sub = JUST(ScalarAdd(JUST(Sub(x, y, 1, false)), eps, 1, false));
+    return ScalarNorm(sub, p, output_dim - 1, keepdim, NullOpt);
+  }
+};
+
 class CosineSimilarityFunctor {
  public:
   Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& x,
@@ -2325,8 +2756,8 @@ class CosineSimilarityFunctor {
         int64_t offset = max_shape.NumAxes() - 1 - i;
         int64_t dim_x = x_shape.NumAxes() - 1 - offset;
         int64_t dim_y = y_shape.NumAxes() - 1 - offset;
-        int64_t size_x = (dim_x >= 0) ? x_shape.At(i) : 1;
-        int64_t size_y = (dim_y >= 0) ? y_shape.At(i) : 1;
+        int64_t size_x = (dim_x >= 0) ? x_shape.At(dim_x) : 1;
+        int64_t size_y = (dim_y >= 0) ? y_shape.At(dim_y) : 1;
         if (!(size_x == size_y || size_x == 1 || size_y == 1)) {
           return Error::RuntimeError()
                  << "The size of tensor a (" << size_x << ") must match the size of tensor b ("
@@ -2474,6 +2905,7 @@ class FusedScaleTrilSoftmaxMaskScaleFunctor {
   }
   Maybe<TensorTuple> operator()(const std::shared_ptr<one::Tensor>& x, const float p,
                                 const int64_t diagonal, const float tril_scale_value,
+                                const float tril_fill_value,
                                 const Optional<one::Generator>& generator) const {
     const auto gen = generator.value_or(JUST(one::DefaultAutoGenerator()));
     MutableAttrMap random_mask_like_attrs;
@@ -2491,6 +2923,7 @@ class FusedScaleTrilSoftmaxMaskScaleFunctor {
     JUST(fused_attrs.SetAttr<int64_t>("diagonal", diagonal));
     JUST(fused_attrs.SetAttr<float>("tril_scale_value", tril_scale_value));
     JUST(fused_attrs.SetAttr<float>("mask_scale_value", mask_scale_value));
+    JUST(fused_attrs.SetAttr<float>("tril_fill_value", tril_fill_value));
 
     return OpInterpUtil::Dispatch<TensorTuple>(*fused_op_, {x, mask}, fused_attrs);
   }
@@ -2949,10 +3382,11 @@ class OneEmbeddingIdShuffleFunctor {
   }
 
   Maybe<TensorTuple> operator()(const std::shared_ptr<one::Tensor>& ids,
-                                const Optional<one::Tensor>& table_ids,
-                                const int32_t& num_tables) const {
+                                const Optional<one::Tensor>& table_ids, const int32_t& num_tables,
+                                const std::string& embedding_name) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<int32_t>("num_tables", num_tables));
+    JUST(attrs.SetAttr<std::string>("embedding_name", embedding_name));
     if (table_ids) {
       return OpInterpUtil::Dispatch<TensorTuple>(*op_table_ids_has_in_out_, {ids, JUST(table_ids)},
                                                  attrs);
@@ -2978,14 +3412,20 @@ class OneEmbeddingEmbeddingShuffleFunctor {
                          .Build());
   }
 
-  Maybe<Tensor> operator()(
-      const std::shared_ptr<one::Tensor>& cur_rank_embeddings,
-      const std::shared_ptr<one::Tensor>& num_unique_matrix,
-      const std::shared_ptr<one::Tensor>& cur_rank_inverse_indices,
-      const std::shared_ptr<one::Tensor>& inverse_unique_partition_indices) const {
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& cur_rank_embeddings,
+                           const std::shared_ptr<one::Tensor>& num_unique_matrix,
+                           const std::shared_ptr<one::Tensor>& cur_rank_inverse_indices,
+                           const std::shared_ptr<one::Tensor>& inverse_unique_partition_indices,
+                           const std::string& embedding_name) const {
+    MutableAttrMap attrs;
+    const int64_t num_axes = cur_rank_embeddings->shape()->NumAxes();
+    JUST(attrs.SetAttr<int64_t>("embedding_size", cur_rank_embeddings->shape()->At(num_axes - 1)));
+    JUST(attrs.SetAttr<std::string>("embedding_name", embedding_name));
     return OpInterpUtil::Dispatch<Tensor>(
-        *op_, {cur_rank_embeddings, num_unique_matrix, cur_rank_inverse_indices,
-               inverse_unique_partition_indices});
+        *op_,
+        {cur_rank_embeddings, num_unique_matrix, cur_rank_inverse_indices,
+         inverse_unique_partition_indices},
+        attrs);
   }
 
  private:
@@ -3004,14 +3444,20 @@ class OneEmbeddingEmbeddingGradientShuffleFunctor {
                          .Build());
   }
 
-  Maybe<Tensor> operator()(
-      const std::shared_ptr<one::Tensor>& embedding_grad,
-      const std::shared_ptr<one::Tensor>& num_unique_matrix,
-      const std::shared_ptr<one::Tensor>& cur_rank_inverse_indices,
-      const std::shared_ptr<one::Tensor>& inverse_unique_partition_indices) const {
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& embedding_grad,
+                           const std::shared_ptr<one::Tensor>& num_unique_matrix,
+                           const std::shared_ptr<one::Tensor>& cur_rank_inverse_indices,
+                           const std::shared_ptr<one::Tensor>& inverse_unique_partition_indices,
+                           const std::string& embedding_name) const {
+    MutableAttrMap attrs;
+    const int64_t num_axes = embedding_grad->shape()->NumAxes();
+    JUST(attrs.SetAttr<int64_t>("embedding_size", embedding_grad->shape()->At(num_axes - 1)));
+    JUST(attrs.SetAttr<std::string>("embedding_name", embedding_name));
     return OpInterpUtil::Dispatch<Tensor>(
-        *op_, {embedding_grad, num_unique_matrix, cur_rank_inverse_indices,
-               inverse_unique_partition_indices});
+        *op_,
+        {embedding_grad, num_unique_matrix, cur_rank_inverse_indices,
+         inverse_unique_partition_indices},
+        attrs);
   }
 
  private:
@@ -3126,10 +3572,13 @@ class OneEmbeddingSgdUpdateFunctor {
                            const std::shared_ptr<one::Tensor>& learning_rate,
                            const std::shared_ptr<one::Tensor>& down_scale_by_tensor,
                            const std::shared_ptr<one::Tensor>& skip_if, const double scale,
-                           const float weight_decay, const float momentum) const {
+                           const float weight_decay, const float momentum, const int64_t line_size,
+                           const int64_t embedding_size) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<double>("scale", scale));
     JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
+    JUST(attrs.SetAttr<int64_t>("line_size", line_size));
+    JUST(attrs.SetAttr<int64_t>("embedding_size", embedding_size));
     if (momentum == 0) {
       return OpInterpUtil::Dispatch<Tensor>(*sgd_op_,
                                             {num_unique_ids, unique_embeddings, embedding_grad,
@@ -3184,7 +3633,8 @@ class OneEmbeddingAdamUpdateFunctor {
                            const Optional<one::Tensor>& bias_correction1,
                            const Optional<one::Tensor>& bias_correction2, const double scale,
                            const float weight_decay, const float beta1, const float beta2,
-                           const float epsilon, const bool do_bias_correction) const {
+                           const float epsilon, const bool do_bias_correction,
+                           const int64_t line_size, const int64_t embedding_size) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<double>("scale", scale));
     JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
@@ -3192,6 +3642,8 @@ class OneEmbeddingAdamUpdateFunctor {
     JUST(attrs.SetAttr<float>("beta2", beta2));
     JUST(attrs.SetAttr<float>("epsilon", epsilon));
     JUST(attrs.SetAttr<bool>("do_bias_correction", do_bias_correction));
+    JUST(attrs.SetAttr<int64_t>("line_size", line_size));
+    JUST(attrs.SetAttr<int64_t>("embedding_size", embedding_size));
     if (do_bias_correction) {
       CHECK(bias_correction1);
       CHECK(bias_correction2);
@@ -3236,13 +3688,15 @@ class OneEmbeddingAdagradUpdateFunctor {
                            const std::shared_ptr<one::Tensor>& down_scale_by_tensor,
                            const std::shared_ptr<one::Tensor>& skip_if,
                            const std::shared_ptr<one::Tensor>& train_step, const double scale,
-                           const float weight_decay, const float lr_decay,
-                           const float epsilon) const {
+                           const float weight_decay, const float lr_decay, const float epsilon,
+                           const int64_t line_size, const int64_t embedding_size) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<double>("scale", scale));
     JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
     JUST(attrs.SetAttr<float>("lr_decay", lr_decay));
     JUST(attrs.SetAttr<float>("epsilon", epsilon));
+    JUST(attrs.SetAttr<int64_t>("line_size", line_size));
+    JUST(attrs.SetAttr<int64_t>("embedding_size", embedding_size));
     return OpInterpUtil::Dispatch<Tensor>(
         *op_,
         {num_unique_ids, unique_embeddings, embedding_grad, learning_rate, down_scale_by_tensor,
@@ -3276,7 +3730,8 @@ class OneEmbeddingFtrlUpdateFunctor {
                            const std::shared_ptr<one::Tensor>& down_scale_by_tensor,
                            const std::shared_ptr<one::Tensor>& skip_if, const double scale,
                            const float weight_decay, const float lr_power, const float lambda1,
-                           const float lambda2, const float beta) const {
+                           const float lambda2, const float beta, const int64_t line_size,
+                           const int64_t embedding_size) const {
     MutableAttrMap attrs;
     JUST(attrs.SetAttr<double>("scale", scale));
     JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
@@ -3284,6 +3739,8 @@ class OneEmbeddingFtrlUpdateFunctor {
     JUST(attrs.SetAttr<float>("lambda1", lambda1));
     JUST(attrs.SetAttr<float>("lambda2", lambda2));
     JUST(attrs.SetAttr<float>("beta", beta));
+    JUST(attrs.SetAttr<int64_t>("line_size", line_size));
+    JUST(attrs.SetAttr<int64_t>("embedding_size", embedding_size));
     return OpInterpUtil::Dispatch<Tensor>(*op_,
                                           {num_unique_ids, unique_embeddings, embedding_grad,
                                            learning_rate, down_scale_by_tensor, skip_if},
@@ -3310,6 +3767,117 @@ class RocAucScoreFunctor {
   std::shared_ptr<OpExpr> op_;
 };
 
+class MultiTensorSgdUpdateFunctor {
+ public:
+  MultiTensorSgdUpdateFunctor() {
+    // This functor is just for unittest
+    op_.resize(kMaxInputCount /*the maximum number of inputs*/);
+    for (int n = 0; n < op_.size(); ++n) {
+      op_[n] = CHECK_JUST(one::OpBuilder("multi_tensor_sgd_update")
+                              .Input("model", n + 1)
+                              .Input("model_diff", n + 1)
+                              .Input("learning_rate")
+                              .Build());
+    }
+  }
+
+  Maybe<void> operator()(const TensorTuple& model, const TensorTuple& model_diff,
+                         const std::shared_ptr<one::Tensor>& learning_rate, const double& scale,
+                         const float& weight_decay) const {
+    MutableAttrMap attrs;
+    JUST(attrs.SetAttr<double>("scale", scale));
+    JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
+    const int64_t weight_size = model.size();
+    for (int i = 0; i < weight_size; i += kMaxInputCount) {
+      size_t size = (i + kMaxInputCount) < weight_size ? kMaxInputCount : weight_size - i;
+      TensorTuple input(2 * size + 1);
+      std::copy(model.begin() + i, model.begin() + i + size, input.begin());
+      std::copy(model_diff.begin() + i, model_diff.begin() + size, input.begin() + size);
+      input[2 * size] = learning_rate;
+      JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_[size - 1], input, attrs));
+    }
+    return Maybe<void>::Ok();
+  }
+
+ private:
+  std::vector<std::shared_ptr<OpExpr>> op_;
+};
+
+class MultiTensorAdamUpdateFunctor {
+ public:
+  MultiTensorAdamUpdateFunctor() {
+    // This functor is just for unittest
+    op_.resize(kMaxInputCount /*the maximum number of inputs*/);
+    for (int n = 0; n < op_.size(); ++n) {
+      op_[n] = CHECK_JUST(one::OpBuilder("multi_tensor_adam_update")
+                              .Input("model", n + 1)
+                              .Input("model_diff", n + 1)
+                              .Input("m", n + 1)
+                              .Input("v", n + 1)
+                              .Input("learning_rate")
+                              .Build());
+    }
+  }
+
+  Maybe<void> operator()(const TensorTuple& model, const TensorTuple& model_diff,
+                         const TensorTuple& m, const TensorTuple& v,
+                         const std::shared_ptr<one::Tensor>& learning_rate, const float& beta1,
+                         const float& beta2, const float& bias_correction1_val,
+                         const float& bias_correction2_val, const bool& do_bias_correction,
+                         const double& scale, const float& weight_decay) const {
+    MutableAttrMap attrs;
+    JUST(attrs.SetAttr<double>("scale", scale));
+    JUST(attrs.SetAttr<float>("weight_decay", weight_decay));
+    JUST(attrs.SetAttr<float>("beta1", beta1));
+    JUST(attrs.SetAttr<float>("beta2", beta2));
+    JUST(attrs.SetAttr<float>("bias_correction1_val", bias_correction1_val));
+    JUST(attrs.SetAttr<float>("bias_correction2_val", bias_correction2_val));
+    JUST(attrs.SetAttr<bool>("do_bias_correction", do_bias_correction));
+
+    const int64_t weight_size = model.size();
+
+    for (int i = 0; i < weight_size; i += kMaxInputCount) {
+      size_t size = (i + kMaxInputCount) < weight_size ? kMaxInputCount : weight_size - i;
+      TensorTuple input(4 * size + 1);
+      std::copy(model.begin() + i, model.begin() + i + size, input.begin());
+      std::copy(model_diff.begin() + i, model_diff.begin() + i + size, input.begin() + size);
+      std::copy(m.begin() + i, m.begin() + i + size, input.begin() + 2 * size);
+      std::copy(v.begin() + i, v.begin() + i + size, input.begin() + 3 * size);
+      input[4 * size] = learning_rate;
+      JUST(OpInterpUtil::Dispatch<TensorTuple>(*op_[size - 1], input, attrs));
+    }
+    return Maybe<void>::Ok();
+  }
+
+ private:
+  std::vector<std::shared_ptr<OpExpr>> op_;
+};
+
+class MatrixVectorProductFunctor {
+ public:
+  MatrixVectorProductFunctor() {
+    matrix_vector_product_op_ = CHECK_JUST(
+        one::OpBuilder("matrix_vector_product").Input("a").Input("b").Output("out").Build());
+  }
+
+  Maybe<Tensor> operator()(const std::shared_ptr<one::Tensor>& input,
+                           const std::shared_ptr<one::Tensor>& vec) const {
+    const auto& input_shape = input->shape();
+    const auto& vec_shape = vec->shape();
+    CHECK_OR_RETURN(input_shape->NumAxes() == 2 && vec_shape->NumAxes() == 1)
+        << Error::RuntimeError() << "vector + matrix @ vector expected, got "
+        << "1, " << input_shape->NumAxes() << ", " << vec_shape->NumAxes();
+    CHECK_EQ_OR_RETURN(input_shape->at(1), vec_shape->at(0))
+        << Error::RuntimeError() << "size mismatch, got " << std::to_string(input_shape->at(0))
+        << ", " << std::to_string(input_shape->at(0)) << "x" << std::to_string(input_shape->at(1))
+        << ", " << std::to_string(vec_shape->at(0));
+    return OpInterpUtil::Dispatch<Tensor>(*matrix_vector_product_op_, {input, vec});
+  }
+
+ private:
+  std::shared_ptr<OpExpr> matrix_vector_product_op_;
+};
+
 }  // namespace impl
 
 ONEFLOW_FUNCTION_LIBRARY(m) {
@@ -3323,7 +3891,10 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::EmbeddingReNormFunctor>("EmbeddingReNorm");
   m.add_functor<impl::EmbeddingFunctor>("Embedding");
   m.add_functor<impl::MatMulFunctor>("MatMul");
+  m.add_functor<impl::MatMulNoBroadCastFunctor>("MatMulNoBroadCast");
   m.add_functor<impl::BatchMatMulFunctor>("BatchMatMul");
+  m.add_functor<impl::MatrixVectorProductFunctor>("MatrixVectorProduct");
+  m.add_functor<impl::VectorMatrixProductFunctor>("VectorMatrixProduct");
   m.add_functor<impl::TensorDotFunctor>("TensorDot");
   m.add_functor<impl::TensorDotIntDimsFunctor>("TensorDotIntDims");
   m.add_functor<impl::FusedMLPFunctor>("FusedMLP");
@@ -3340,7 +3911,7 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::L1LossFunctor>("L1Loss");
   m.add_functor<impl::MseLossFunctor>("MseLoss");
   m.add_functor<impl::KLDivLossFunctor>("KLDivLoss");
-  m.add_functor<impl::NllLossFunctor>("NllLoss");
+  m.add_functor<impl::NLLLossFunctor>("NLLLoss");
   m.add_functor<impl::BinaryCrossEntropyLossFunctor>("BinaryCrossEntropyLoss");
   m.add_functor<impl::BinaryCrossEntropyWithLogitsLossFunctor>("BinaryCrossEntropyWithLogitsLoss");
   m.add_functor<impl::SparseCrossEntropyFunctor>("SparseCrossEntropy");
@@ -3358,9 +3929,15 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::GridSampleFunctor>("GridSample");
   m.add_functor<impl::NormalizationFunctor>("Normalization");
   m.add_functor<impl::NormalizationAddReluFunctor>("NormalizationAddRelu");
+  m.add_functor<impl::ConstantPadFunctor>("ConstantPad");
+  m.add_functor<impl::ReflectionPadFunctor>("ReflectionPad");
+  m.add_functor<impl::ReplicationPadFunctor>("ReplicationPad");
   m.add_functor<impl::PadFunctor>("Pad");
   m.add_functor<impl::DropoutFunctor>("Dropout");
   m.add_functor<impl::DropoutGradFunctor>("DropoutGrad");
+  m.add_functor<impl::Dropout1dFunctor>("Dropout1d");
+  m.add_functor<impl::Dropout2dFunctor>("Dropout2d");
+  m.add_functor<impl::Dropout3dFunctor>("Dropout3d");
   m.add_functor<impl::PixelShuffleFunctor>("PixelShuffle");
   m.add_functor<impl::AvgPool1DFunctor>("AvgPool1D");
   m.add_functor<impl::AvgPool2DFunctor>("AvgPool2D");
@@ -3370,6 +3947,7 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::OneHotFunctor>("OneHot");
   m.add_functor<impl::FusedSelfAttentionFunctor>("FusedSelfAttention");
   m.add_functor<impl::FusedSelfAttentionGradFunctor>("FusedSelfAttentionGrad");
+  m.add_functor<impl::PairwiseDistanceFunctor>("PairwiseDistance");
   m.add_functor<impl::CosineSimilarityFunctor>("CosineSimilarity");
   m.add_functor<impl::NormalizeFunctor>("Normalize");
   m.add_functor<impl::L2NormalizeFunctor>("L2Normalize");
@@ -3395,12 +3973,16 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::OneEmbeddingLookupFunctor>("OneEmbeddingLookup");
   m.add_functor<impl::OneEmbeddingUniqueKeyValuePairFunctor>("OneEmbeddingUniqueKeyValuePair");
   m.add_functor<impl::NormalFunctor>("Normal");
-  m.add_functor<impl::ConsistentNormalFunctor>("ConsistentNormal");
+  m.add_functor<impl::Normal2Functor>("Normal2");
+  m.add_functor<impl::GlobalNormalFunctor>("GlobalNormal");
+  m.add_functor<impl::GlobalNormal2Functor>("GlobalNormal2");
   m.add_functor<impl::OneEmbeddingSgdUpdateFunctor>("OneEmbeddingSgdUpdate");
   m.add_functor<impl::OneEmbeddingAdamUpdateFunctor>("OneEmbeddingAdamUpdate");
   m.add_functor<impl::OneEmbeddingAdagradUpdateFunctor>("OneEmbeddingAdagradUpdate");
   m.add_functor<impl::OneEmbeddingFtrlUpdateFunctor>("OneEmbeddingFtrlUpdate");
   m.add_functor<impl::RocAucScoreFunctor>("RocAucScore");
+  m.add_functor<impl::MultiTensorSgdUpdateFunctor>("MultiTensorSgdUpdate");
+  m.add_functor<impl::MultiTensorAdamUpdateFunctor>("MultiTensorAdamUpdate");
 }
 
 }  // namespace functional

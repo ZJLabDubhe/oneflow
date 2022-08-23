@@ -27,8 +27,8 @@ namespace {
 size_t HashAttrName2AttrValWrapper(const oneflow::AttrName2AttrValWrapper& attr_name2attr_val) {
   size_t hash_value = 0;
   for (const auto& pair : attr_name2attr_val) {
-    hash_value ^= std::hash<std::string>()(pair.first);
-    hash_value ^= pair.second->hash_value();
+    AddHash(&hash_value, pair.first);
+    HashCombine(&hash_value, pair.second->hash_value());
   }
   return hash_value;
 }
@@ -125,7 +125,7 @@ template<typename T>
 Maybe<const T&> ComposedAttrMap::GetAttr(const std::string& attr_name) const {
   const auto& attr = Attr4Name(attr_name);
   CHECK_NOTNULL_OR_RETURN(attr.get())
-      << Error::InvalidValueError(std::string("no attribute found. attribute name: ") + attr_name);
+      << Error::InvalidValueError() << "no attribute found. attribute name: " << attr_name;
   return dynamic_cast<const user_op::TypedAttrVal<T>*>(attr.get())->val();
 }
 
