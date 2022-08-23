@@ -80,6 +80,17 @@ class SiluGradGradFunctor {
   }
 };
 
+class ExpGradGradFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<Tensor>& x,
+                           const std::shared_ptr<Tensor>& dydx) const {
+    auto res = sequence_function(functional::Exp)
+                   .then(std::bind(functional::Mul, dydx, std::placeholders::_1))
+                   .call(x);
+    return res;
+  }
+};
+
 class SeluGradGradFunctor {
  public:
   // y'' = scale * alpha * exp(x) (x < 0)
@@ -108,6 +119,19 @@ class SoftSignGradGradFunctor {
                      return functional::ScalarMul(Scalar(-2), input);
                    })
                    .then(std::bind(functional::AbsGrad, x, std::placeholders::_1))
+                   .then(std::bind(functional::Mul, dydx, std::placeholders::_1))
+                   .call(x);
+    return res;
+  }
+};
+
+class LogGradGradFunctor {
+ public:
+  Maybe<Tensor> operator()(const std::shared_ptr<Tensor>& x,
+                           const std::shared_ptr<Tensor>& dydx) const {
+    auto res = sequence_function(functional::Square)
+                   .then(functional::Negative)
+                   .then(functional::Reciprocal)
                    .then(std::bind(functional::Mul, dydx, std::placeholders::_1))
                    .call(x);
     return res;
@@ -185,7 +209,9 @@ ONEFLOW_FUNCTION_LIBRARY(m) {
   m.add_functor<impl::SinGradGradFunctor>("SinGradGrad");
   m.add_functor<impl::CosGradGradFunctor>("CosGradGrad");
   m.add_functor<impl::SiluGradGradFunctor>("SiluGradGrad");
+  m.add_functor<impl::ExpGradGradFunctor>("ExpGradGrad");
   m.add_functor<impl::SeluGradGradFunctor>("SeluGradGrad");
+  m.add_functor<impl::LogGradGradFunctor>("LogGradGrad");
   m.add_functor<impl::SoftSignGradGradFunctor>("SoftSignGradGrad");
   m.add_functor<impl::HardSigmoidGradGradFunctor>("HardSigmoidGradGrad");
   m.add_functor<impl::HardSwishGradGradFunctor>("HardSwishGradGrad");
