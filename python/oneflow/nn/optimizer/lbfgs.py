@@ -63,12 +63,12 @@ def _strong_wolfe(obj_func,
                   tolerance_change=1e-9,
                   max_ls=25):
     # ported from https://github.com/torch/optim/blob/master/lswolfe.lua
-    d_norm = flow.max(flow.abs(d))
+    d_norm = d.abs().max()
     g = g.clone().contiguous()
     # evaluate objective and gradient using initial step
     f_new, g_new = obj_func(x, t, d)
     ls_func_evals = 1
-    gtd_new = flow.dot(g_new, d)
+    gtd_new = g_new.dot(d)
 
     # bracket an interval containing a point satisfying the Wolfe criteria
     t_prev, f_prev, g_prev, gtd_prev = 0, f, g, gtd
@@ -83,7 +83,7 @@ def _strong_wolfe(obj_func,
             bracket_gtd = [gtd_prev, gtd_new]
             break
 
-        if flow.abs(gtd_new) <= -c2 * gtd:
+        if abs(gtd_new) <= -c2 * gtd:
             bracket = [t]
             bracket_f = [f_new]
             bracket_g = [g_new]
@@ -101,6 +101,7 @@ def _strong_wolfe(obj_func,
         min_step = t + 0.01 * (t - t_prev)
         max_step = t * 10
         tmp = t
+
         t = _cubic_interpolate(
             t_prev,
             f_prev,
@@ -117,7 +118,7 @@ def _strong_wolfe(obj_func,
         gtd_prev = gtd_new
         f_new, g_new = obj_func(x, t, d)
         ls_func_evals += 1
-        gtd_new = flow.dot(g_new, d)
+        gtd_new = g_new.dot(d)
         ls_iter += 1
 
     # reached max number of iterations?
@@ -133,12 +134,7 @@ def _strong_wolfe(obj_func,
     # find high and low points in bracket
     low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[-1] else (1, 0)
     while not done and ls_iter < max_ls:
-        if flow.is_tensor(bracket[1]):
-            bracket[1] = bracket[1].item()
-        if flow.is_tensor(bracket[0]):
-            bracket[0] = bracket[0].item()
         if abs(bracket[1] - bracket[0]) * d_norm < tolerance_change:
-            print('stop')
             break
 
         # compute new trial value
@@ -170,7 +166,7 @@ def _strong_wolfe(obj_func,
         # Evaluate new point
         f_new, g_new = obj_func(x, t, d)
         ls_func_evals += 1
-        gtd_new = flow.dot(g_new, d)
+        gtd_new = g_new.dot(d)
         ls_iter += 1
 
         if f_new > (f + c1 * t * gtd) or f_new >= bracket_f[low_pos]:
@@ -181,7 +177,7 @@ def _strong_wolfe(obj_func,
             bracket_gtd[high_pos] = gtd_new
             low_pos, high_pos = (0, 1) if bracket_f[0] <= bracket_f[1] else (1, 0)
         else:
-            if flow.abs(gtd_new) <= -c2 * gtd:
+            if abs(gtd_new) <= -c2 * gtd:
                 # Wolfe conditions satisfied
                 done = True
             elif gtd_new * (bracket[high_pos] - bracket[low_pos]) >= 0:
@@ -261,7 +257,6 @@ class LBFGS(Optimizer):
 
         group = self.param_groups[0]
         self.parameters = group._parameters
-
         self._numel_cache = None
 
     def _numel(self):
@@ -288,7 +283,7 @@ class LBFGS(Optimizer):
         for p in self.parameters:
             numel = p.numel()
             # view as to avoid deprecated pointwise semantics
-            p.add_((update[offset:offset + numel].view(p.size())) * step_size)
+            p.add_((update[offset:offset + numel].view_as(p)) * step_size)
             offset += numel
         assert offset == self._numel()
 
@@ -301,7 +296,7 @@ class LBFGS(Optimizer):
 
     def _directional_evaluate(self, closure, x, t, d):
         self._add_grad(t, d)
-        loss = closure().float()
+        loss = float(closure())
         flat_grad = self._gather_flat_grad()
         self._set_param(x)
         return loss, flat_grad
@@ -335,12 +330,12 @@ class LBFGS(Optimizer):
 
             # evaluate initial f(x) and df/dx
             orig_loss = closure()
-            loss = orig_loss.float()
+            loss = float(orig_loss)
             current_evals = 1
             state['func_evals'] += 1
 
             flat_grad = self._gather_flat_grad()
-            opt_cond = flow.max(flow.abs(flat_grad)) <= tolerance_grad
+            opt_cond = flat_grad.abs().max() <= tolerance_grad
 
             # optimal condition
             if opt_cond:
@@ -376,7 +371,7 @@ class LBFGS(Optimizer):
                     # do lbfgs update (update memory)
                     y = flat_grad.sub(prev_flat_grad)
                     s = d.mul(t)
-                    ys = flow.dot(y, s)  # y*s
+                    ys = y.dot(s)  # y*s
                     if ys > 1e-10:
                         # updating memory
                         if len(old_dirs) == history_size:
@@ -391,7 +386,7 @@ class LBFGS(Optimizer):
                         ro.append(1. / ys)
 
                         # update scale of initial Hessian approximation
-                        H_diag = ys / (flow.dot(y, y))  # (y*y)
+                        H_diag = ys / y.dot(y)  # (y*y)
 
                     # compute the approximate (L-BFGS) inverse Hessian
                     # multiplied by the gradient
@@ -405,7 +400,7 @@ class LBFGS(Optimizer):
                     # two loop recursion
                     q = flat_grad.neg()
                     for i in range(num_old - 1, -1, -1):
-                        al[i] = flow.dot(old_stps[i], q) * ro[i]
+                        al[i] = old_stps[i].dot(q) * ro[i]
                         q = q + old_dirs[i] * (-al[i])
 
                     # multiply by initial Hessian
@@ -414,6 +409,7 @@ class LBFGS(Optimizer):
                     for i in range(num_old):
                         be_i = flow.dot(old_dirs[i], r) * ro[i]
                         r = r + old_stps[i] * (al[i] - be_i)
+                        # r.add_(old_stps[i], alpha=al[i] - be_i)
                         d = r
 
                 if prev_flat_grad is None:
@@ -427,12 +423,12 @@ class LBFGS(Optimizer):
                 ############################################################
                 # reset initial guess for step size
                 if state['n_iter'] == 1:
-                    t = min(1., 1. / flow.sum(flow.abs(flat_grad))) * lr
+                    t = min(1., 1. / flat_grad.abs().sum()) * lr
                 else:
                     t = lr
 
                 # directional derivative
-                gtd = flow.dot(flat_grad, d)  # g * d
+                gtd = flat_grad.dot(d)  # g * d
 
                 # directional derivative is below tolerance
                 if gtd > -tolerance_change:
@@ -446,14 +442,13 @@ class LBFGS(Optimizer):
                         raise RuntimeError("only 'strong_wolfe' is supported")
                     else:
                         x_init = self._clone_param()
-
                         def obj_func(x, t, d):
                             return self._directional_evaluate(closure, x, t, d)
 
                         loss, flat_grad, t, ls_func_evals = _strong_wolfe(
                             obj_func, x_init, t, d, loss, flat_grad, gtd)
                     self._add_grad(t, d)
-                    opt_cond = flow.max(flow.abs(flat_grad)) <= tolerance_grad
+                    opt_cond = flat_grad.abs().max() <= tolerance_grad
                 else:
                     # no line search, simply move with fixed-step
                     self._add_grad(t, d)
@@ -462,9 +457,10 @@ class LBFGS(Optimizer):
                         # the reason we do this: in a stochastic setting,
                         # no use to re-evaluate that function here
                         with flow.enable_grad():
-                            loss = closure().float()
+                            # loss = closure().float()
+                            loss = float(closure())
                         flat_grad = self._gather_flat_grad()
-                        opt_cond = flow.max(flow.abs(flat_grad)) <= tolerance_grad
+                        opt_cond = flat_grad.abs().max() <= tolerance_grad
                         ls_func_evals = 1
 
                 # update func eval
@@ -476,7 +472,6 @@ class LBFGS(Optimizer):
                 ############################################################
                 if n_iter == max_iter:
                     break
-
                 if current_evals >= max_eval:
                     break
 
@@ -485,10 +480,10 @@ class LBFGS(Optimizer):
                     break
 
                 # lack of progress
-                if flow.max(flow.abs(flow.mul(d, t))) <= tolerance_change:
+                if d.mul(t).abs().max() <= tolerance_change:
                     break
 
-                if flow.abs(loss - prev_loss) < tolerance_change:
+                if abs(loss - prev_loss) < tolerance_change:
                     break
 
             state['d'] = d
@@ -502,37 +497,37 @@ class LBFGS(Optimizer):
 
             return orig_loss
 
-    def _generate_conf_for_graph(self, train_conf, vars_conf):
+    # def _generate_conf_for_graph(self, train_conf, vars_conf):
         # This part temporarily has none test cases.
         # Maybe it can not work. Fix bugs later.
-
-        new_opt_confs = []
-        for param_group in self.param_groups:
-            optimizer_conf = train_conf.optimizer_conf.add()
-
-            lr = (
-                param_group["initial_lr"]
-                if "initial_lr" in param_group
-                else param_group["lr"]
-            )
-            l2 = param_group["weight_decay"]
-            initial_accumulator_value = param_group["initial_accumulator_value"]
-            lr_decay = param_group["lr_decay"]
-            epsilon = param_group["eps"]
-
-            optimizer_conf.base_learning_rate = lr
-            optimizer_conf.adagrad_conf.initial_accumulator_value = (
-                initial_accumulator_value
-            )
-            optimizer_conf.adagrad_conf.lr_decay = lr_decay
-            optimizer_conf.adagrad_conf.epsilon = epsilon
-
-            self._generate_grad_clip_conf_for_optim_conf(param_group, optimizer_conf)
-
-            for param in param_group.parameters:
-                vars_conf[param].l2 = l2
-                if param.requires_grad:
-                    optimizer_conf.variable_op_names.append(vars_conf[param].name)
-
-            new_opt_confs.append(optimizer_conf)
-        return new_opt_confs
+        #
+        # new_opt_confs = []
+        # for param_group in self.param_groups:
+        #     optimizer_conf = train_conf.optimizer_conf.add()
+        #
+        #     lr = (
+        #         param_group["initial_lr"]
+        #         if "initial_lr" in param_group
+        #         else param_group["lr"]
+        #     )
+        #     l2 = param_group["weight_decay"]
+        #     initial_accumulator_value = param_group["initial_accumulator_value"]
+        #     lr_decay = param_group["lr_decay"]
+        #     epsilon = param_group["eps"]
+        #
+        #     optimizer_conf.base_learning_rate = lr
+        #     optimizer_conf.adagrad_conf.initial_accumulator_value = (
+        #         initial_accumulator_value
+        #     )
+        #     optimizer_conf.adagrad_conf.lr_decay = lr_decay
+        #     optimizer_conf.adagrad_conf.epsilon = epsilon
+        #
+        #     self._generate_grad_clip_conf_for_optim_conf(param_group, optimizer_conf)
+        #
+        #     for param in param_group.parameters:
+        #         vars_conf[param].l2 = l2
+        #         if param.requires_grad:
+        #             optimizer_conf.variable_op_names.append(vars_conf[param].name)
+        #
+        #     new_opt_confs.append(optimizer_conf)
+        # return new_opt_confs
