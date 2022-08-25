@@ -10,17 +10,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 """
-import collections
-import math
-from typing import Callable, Dict, Iterator, List, Tuple, Union
+from typing import Callable, Dict, Iterator, List, Union
 from functools import reduce
-from collections import defaultdict, abc as container_abcs
+from collections import defaultdict
 import numpy as np
 
 import oneflow as flow
-from oneflow.nn.optimizer.optimizer import Optimizer, ParamGroup
+from oneflow.nn.optimizer.optimizer import Optimizer
 from oneflow.nn.parameter import Parameter
-import functools
 
 
 def _cubic_interpolate(x1, f1, g1, x2, f2, g2, bounds=None):
@@ -268,7 +265,7 @@ class LBFGS(Optimizer):
         views = []
         for p in self.parameters:
             if p.grad is None:
-                view = flow.tensor(np.zeros(p.numel()))
+                view = flow.zeros(p.numel())
             # deal with sparse matrix
             # oneflow seems don't have similar api to fix the problem
             # elif p.grad.is_sparse:
@@ -496,38 +493,3 @@ class LBFGS(Optimizer):
             state['prev_loss'] = prev_loss
 
             return orig_loss
-
-    # def _generate_conf_for_graph(self, train_conf, vars_conf):
-        # This part temporarily has none test cases.
-        # Maybe it can not work. Fix bugs later.
-        #
-        # new_opt_confs = []
-        # for param_group in self.param_groups:
-        #     optimizer_conf = train_conf.optimizer_conf.add()
-        #
-        #     lr = (
-        #         param_group["initial_lr"]
-        #         if "initial_lr" in param_group
-        #         else param_group["lr"]
-        #     )
-        #     l2 = param_group["weight_decay"]
-        #     initial_accumulator_value = param_group["initial_accumulator_value"]
-        #     lr_decay = param_group["lr_decay"]
-        #     epsilon = param_group["eps"]
-        #
-        #     optimizer_conf.base_learning_rate = lr
-        #     optimizer_conf.adagrad_conf.initial_accumulator_value = (
-        #         initial_accumulator_value
-        #     )
-        #     optimizer_conf.adagrad_conf.lr_decay = lr_decay
-        #     optimizer_conf.adagrad_conf.epsilon = epsilon
-        #
-        #     self._generate_grad_clip_conf_for_optim_conf(param_group, optimizer_conf)
-        #
-        #     for param in param_group.parameters:
-        #         vars_conf[param].l2 = l2
-        #         if param.requires_grad:
-        #             optimizer_conf.variable_op_names.append(vars_conf[param].name)
-        #
-        #     new_opt_confs.append(optimizer_conf)
-        # return new_opt_confs
