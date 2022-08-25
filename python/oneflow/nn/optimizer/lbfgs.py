@@ -13,7 +13,6 @@ limitations under the License.
 from typing import Callable, Dict, Iterator, List, Union
 from functools import reduce
 from collections import defaultdict
-import numpy as np
 
 import oneflow as flow
 from oneflow.nn.optimizer.optimizer import Optimizer
