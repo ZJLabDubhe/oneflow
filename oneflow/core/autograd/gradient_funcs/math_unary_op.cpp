@@ -57,8 +57,12 @@ class UnaryMathOp : public OpExprGradFunction<UnaryMathCaptureState> {
   REGISTER_OP_EXPR_GRAD_FUNCTION(op_type_name, op_cls##Cls);
 
 OF_PP_FOR_EACH_TUPLE(INSTANTIAT_AND_REGISTER_UNARY_MATHOP_CLASS, MATH_UNARY_ELEMENTWISE_FUNC_SEQ);
+
+// higher order derivative
 OF_PP_FOR_EACH_TUPLE(INSTANTIAT_AND_REGISTER_UNARY_MATHOP_CLASS,
-                     OF_PP_MAKE_TUPLE_SEQ("tanh", Tanh));
+                     OF_PP_MAKE_TUPLE_SEQ("exp_grad", ExpGrad));
+OF_PP_FOR_EACH_TUPLE(INSTANTIAT_AND_REGISTER_UNARY_MATHOP_CLASS,
+                     OF_PP_MAKE_TUPLE_SEQ("log_grad", LogGrad));
 
 #undef INSTANTIAT_AND_REGISTER_UNARY_MATHOP_CLASS
 }  // namespace one
